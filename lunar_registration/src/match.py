@@ -84,15 +84,18 @@ def detect_and_match_akaze(img1, img2, ratio_threshold=0.75):
 
     Same parameters and return values as detect_and_match_sift.
     """
-    # Try different AKAZE APIs depending on opencv-contrib version
+    # OpenCV 5+ uses cv2.AKAZE.create() / cv2.KAZE.create()
+    # OpenCV 4.x used cv2.AKAZE_create() / cv2.KAZE_create()
     try:
-        akaze = cv2.AKAZE_create()
+        akaze = cv2.AKAZE.create()
     except AttributeError:
         try:
-            akaze = cv2.xfeatures2d_AKAZE.create()
+            akaze = cv2.AKAZE_create()
         except AttributeError:
-            # Fall back to KAZE if AKAZE not available
-            akaze = cv2.KAZE_create()
+            try:
+                akaze = cv2.KAZE.create()
+            except AttributeError:
+                akaze = cv2.KAZE_create()
 
     kp1, des1 = akaze.detectAndCompute(img1, None)
     kp2, des2 = akaze.detectAndCompute(img2, None)

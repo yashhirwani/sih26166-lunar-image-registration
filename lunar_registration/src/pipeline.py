@@ -62,12 +62,13 @@ def run_pipeline(img1, img2, method='auto', max_size=1024):
         try:
             src_pts, dst_pts, kp1, kp2, good_matches = detect_and_match_akaze(img1_clean, img2_clean)
             used_method = 'AKAZE'
-        except ValueError:
+        except Exception as akaze_err:
             if method == 'akaze':
-                raise
-            # Fallback to SIFT
+                # User explicitly requested AKAZE — re-raise so they know it failed
+                raise ValueError(f"AKAZE requested but failed: {akaze_err}") from akaze_err
+            # Auto mode: fall back to SIFT
             src_pts, dst_pts, kp1, kp2, good_matches = detect_and_match_sift(img1_clean, img2_clean)
-            used_method = 'SIFT (fallback)'
+            used_method = 'SIFT (AKAZE fallback)'
     elif method == 'sift':
         src_pts, dst_pts, kp1, kp2, good_matches = detect_and_match_sift(img1_clean, img2_clean)
         used_method = 'SIFT'
