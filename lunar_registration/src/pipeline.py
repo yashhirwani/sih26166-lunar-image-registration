@@ -17,6 +17,7 @@ Returns a dictionary with everything:
 import numpy as np
 import cv2
 import time
+from .config_loader import get_config
 
 from .preprocess import preprocess_pair
 from .match import detect_and_match_sift, detect_and_match_akaze, enforce_uniform_distribution
@@ -25,7 +26,7 @@ from .metrics import compute_all_metrics, format_metrics_report
 from .visualize import draw_matches, create_checkerboard, create_side_by_side, create_difference_image
 
 
-def run_pipeline(img1, img2, method='auto', max_size=1024):
+def run_pipeline(img1, img2, method='auto', max_size=None):
     """
     Complete image registration pipeline.
 
@@ -50,6 +51,9 @@ def run_pipeline(img1, img2, method='auto', max_size=1024):
     """
     start_time = time.time()
     result = {}
+    
+    if max_size is None:
+        max_size = get_config()['preprocessing']['max_size']
 
     # ── Step 1: Preprocess ──────────────────────────────────────────
     img1_clean, img2_clean = preprocess_pair(img1, img2, max_size)
@@ -108,7 +112,8 @@ def run_pipeline(img1, img2, method='auto', max_size=1024):
         result['subpixel_response'] = float(response)
 
         # Apply sub-pixel correction if shift is small (< 5 pixels)
-        if abs(shift[0]) < 5 and abs(shift[1]) < 5:
+        max_shift = get_config()['refinement']['max_shift_pixels']
+        if abs(shift[0]) < max_shift and abs(shift[1]) < max_shift:
             correction = np.float32([[1, 0, shift[0]], [0, 1, shift[1]]])
             h, w = warped_img.shape
             warped_refined = cv2.warpAffine(warped_img, correction, (w, h))

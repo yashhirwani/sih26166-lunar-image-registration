@@ -16,9 +16,10 @@ Two methods available:
 
 import cv2
 import numpy as np
+from .config_loader import get_config
 
 
-def detect_and_match_sift(img1, img2, ratio_threshold=0.75):
+def detect_and_match_sift(img1, img2, ratio_threshold=None):
     """
     Detects keypoints and matches them using SIFT algorithm.
 
@@ -40,6 +41,9 @@ def detect_and_match_sift(img1, img2, ratio_threshold=0.75):
         keypoints2: all keypoints in image 2
         good_matches: list of good match objects (for visualization)
     """
+    if ratio_threshold is None:
+        ratio_threshold = get_config()['matching']['ratio_threshold']
+        
     sift = cv2.SIFT_create(nfeatures=5000)
 
     kp1, des1 = sift.detectAndCompute(img1, None)
@@ -73,7 +77,7 @@ def detect_and_match_sift(img1, img2, ratio_threshold=0.75):
     return src_pts, dst_pts, kp1, kp2, good_matches
 
 
-def detect_and_match_akaze(img1, img2, ratio_threshold=0.75):
+def detect_and_match_akaze(img1, img2, ratio_threshold=None):
     """
     Detects keypoints and matches them using AKAZE algorithm.
 
@@ -84,6 +88,9 @@ def detect_and_match_akaze(img1, img2, ratio_threshold=0.75):
 
     Same parameters and return values as detect_and_match_sift.
     """
+    if ratio_threshold is None:
+        ratio_threshold = get_config()['matching']['ratio_threshold']
+        
     # OpenCV 5+ uses cv2.AKAZE.create() / cv2.KAZE.create()
     # OpenCV 4.x used cv2.AKAZE_create() / cv2.KAZE_create()
     try:
@@ -124,7 +131,7 @@ def detect_and_match_akaze(img1, img2, ratio_threshold=0.75):
     return src_pts, dst_pts, kp1, kp2, good_matches
 
 
-def enforce_uniform_distribution(src_pts, dst_pts, good_matches, img_shape, grid_size=8, max_per_cell=5):
+def enforce_uniform_distribution(src_pts, dst_pts, good_matches, img_shape, grid_size=None, max_per_cell=None):
     """
     Ensures match points are spread evenly across the image.
 
@@ -148,6 +155,11 @@ def enforce_uniform_distribution(src_pts, dst_pts, good_matches, img_shape, grid
     Returns:
         filtered src_pts, dst_pts, good_matches with uniform distribution
     """
+    if grid_size is None:
+        grid_size = get_config()['matching']['grid_size']
+    if max_per_cell is None:
+        max_per_cell = get_config()['matching']['max_per_cell']
+        
     h, w = img_shape
     cell_h = h / grid_size
     cell_w = w / grid_size

@@ -1,0 +1,18 @@
+# lunar_registration/config.yaml
+# ------------------------------
+# Tunable thresholds for the Lunar Image Registration System
+
+preprocessing:
+  max_size: 1024
+  clahe_clip_limit: 2.0
+
+matching:
+  ratio_threshold: 0.75
+  grid_size: 8
+  max_per_cell: 5
+
+ransac:
+  reproj_threshold: 3.0
+
+refinement:
+  max_shift_pixels: 5

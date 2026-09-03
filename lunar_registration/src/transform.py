@@ -20,9 +20,10 @@ Terms explained:
 import cv2
 import numpy as np
 from scipy.signal import fftconvolve
+from .config_loader import get_config
 
 
-def estimate_homography_ransac(src_pts, dst_pts, reproj_threshold=3.0):
+def estimate_homography_ransac(src_pts, dst_pts, reproj_threshold=None):
     """
     Estimates the transformation matrix using RANSAC.
 
@@ -46,6 +47,9 @@ def estimate_homography_ransac(src_pts, dst_pts, reproj_threshold=3.0):
         num_inliers: count of correct matches
         inlier_ratio: fraction of correct matches
     """
+    if reproj_threshold is None:
+        reproj_threshold = get_config()['ransac']['reproj_threshold']
+        
     M, mask = cv2.findHomography(
         src_pts,
         dst_pts,

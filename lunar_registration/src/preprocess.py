@@ -17,6 +17,8 @@ Why we need this:
 
 import cv2
 import numpy as np
+from .config_loader import get_config
+from .config_loader import get_config
 
 
 def load_image(image_path):
@@ -43,7 +45,7 @@ def load_image_from_bytes(image_bytes):
     return img
 
 
-def apply_clahe(img, clip_limit=2.0, tile_size=(8, 8)):
+def apply_clahe(img, clip_limit=None, tile_size=(8, 8)):
     """
     Applies CLAHE (Contrast Limited Adaptive Histogram Equalization).
 
@@ -62,11 +64,13 @@ def apply_clahe(img, clip_limit=2.0, tile_size=(8, 8)):
         clip_limit: how aggressively to enhance contrast (2.0 is good default)
         tile_size: size of each tile (8x8 is good default)
     """
+    if clip_limit is None:
+        clip_limit = get_config()['preprocessing']['clahe_clip_limit']
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
     return clahe.apply(img)
 
 
-def resize_to_max(img, max_size=1024):
+def resize_to_max(img, max_size=None):
     """
     Resizes image so its largest dimension is max_size pixels.
     Keeps aspect ratio (doesn't distort the image).
@@ -74,6 +78,8 @@ def resize_to_max(img, max_size=1024):
     Why: Very large images are slow to process.
     For demo purposes, 1024px is enough detail.
     """
+    if max_size is None:
+        max_size = get_config()['preprocessing']['max_size']
     h, w = img.shape
     if max(h, w) <= max_size:
         return img  # already small enough
@@ -83,7 +89,7 @@ def resize_to_max(img, max_size=1024):
     return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
 
-def preprocess(img, max_size=1024, clip_limit=2.0):
+def preprocess(img, max_size=None, clip_limit=None):
     """
     Full preprocessing pipeline for one image.
     Steps: resize → CLAHE
@@ -101,7 +107,7 @@ def preprocess(img, max_size=1024, clip_limit=2.0):
     return img
 
 
-def preprocess_pair(img1, img2, max_size=1024):
+def preprocess_pair(img1, img2, max_size=None):
     """
     Preprocesses both source and reference images.
     Returns both cleaned images.
