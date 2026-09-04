@@ -97,7 +97,8 @@ def preprocess(img, max_size=None, clip_limit=None):
     Parameters:
         img: grayscale numpy array
         max_size: maximum image dimension
-        clip_limit: CLAHE aggressiveness
+        clip_limit: CLAHE aggressiveness. If None, reads from config.
+                    Can be overridden using sun angle from XML metadata.
 
     Returns:
         cleaned image ready for keypoint detection
@@ -105,6 +106,41 @@ def preprocess(img, max_size=None, clip_limit=None):
     img = resize_to_max(img, max_size)
     img = apply_clahe(img, clip_limit)
     return img
+
+
+def preprocess_with_sun_angle(img, sun_elevation_deg, max_size=None):
+    """
+    Preprocessing that adapts CLAHE based on sun elevation angle.
+
+    This is the illumination-aware preprocessing mode.
+    Sun angle comes from the OHRC XML metadata.
+
+    Logic:
+    - Sun elevation < 10° → very harsh shadows → aggressive CLAHE (clip=4.0)
+    - Sun elevation 10-30° → medium shadows → moderate CLAHE (clip=2.5)
+    - Sun elevation > 30° → soft shadows → gentle CLAHE (clip=1.5)
+
+    This directly addresses PS Challenge #1: Illumination Variation.
+
+    Parameters:
+        img: grayscale numpy array
+        sun_elevation_deg: sun elevation in degrees (from XML metadata)
+        max_size: maximum image dimension
+
+    Returns:
+        cleaned image
+    """
+    if sun_elevation_deg < 10:
+        clip_limit = 4.0
+        print(f"         Sun elevation {sun_elevation_deg:.1f}° → HARD illumination → CLAHE clip=4.0")
+    elif sun_elevation_deg < 30:
+        clip_limit = 2.5
+        print(f"         Sun elevation {sun_elevation_deg:.1f}° → MEDIUM illumination → CLAHE clip=2.5")
+    else:
+        clip_limit = 1.5
+        print(f"         Sun elevation {sun_elevation_deg:.1f}° → EASY illumination → CLAHE clip=1.5")
+
+    return preprocess(img, max_size, clip_limit)
 
 
 def preprocess_pair(img1, img2, max_size=None):

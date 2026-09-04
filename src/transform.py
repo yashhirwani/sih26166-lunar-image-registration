@@ -94,34 +94,82 @@ def warp_image(src_img, M, ref_img_shape):
     return warped
 
 
+def subpixel_refinement_lk(img1, img2, src_pts, dst_pts, mask):
+    """
+    Sub-pixel refinement using Lucas-Kanade optical flow.
+
+    What is Lucas-Kanade?
+    - A classical computer vision algorithm
+    - For each matched point pair, it looks at a small window around the point
+    - Finds the exact sub-pixel position where the two windows best match
+    - Much more accurate than global phase correlation for point-wise refinement
+
+    Why better than phase correlation:
+    - Phase correlation gives ONE global shift for the whole image
+    - Lucas-Kanade gives individual sub-pixel correction for EACH match point
+    - Result: much lower RMSE
+
+    Parameters:
+        img1: source image (after warping)
+        img2: reference image
+        src_pts: source match points
+        dst_pts: destination match points
+        mask: inlier mask from RANSAC
+
+    Returns:
+        refined_src_pts: sub-pixel refined source points
+        refined_dst_pts: sub-pixel refined destination points
+        refined_mask: updated mask
+    """
+    inlier_mask = mask.ravel() == 1
+    src_inliers = src_pts[inlier_mask].reshape(-1, 1, 2)
+    dst_inliers = dst_pts[inlier_mask].reshape(-1, 1, 2)
+
+    if len(src_inliers) < 4:
+        return src_pts, dst_pts, mask
+
+    # Lucas-Kanade parameters
+    lk_params = dict(
+        winSize=(21, 21),       # window size around each point
+        maxLevel=3,             # pyramid levels (handles larger motions)
+        criteria=(
+            cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+            30,    # max iterations
+            0.001  # epsilon (stop when correction < 0.001 pixels)
+        )
+    )
+
+    # Run Lucas-Kanade optical flow
+    # Finds where each point in img1 moved to in img2
+    refined_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+        img1, img2,
+        src_inliers.astype(np.float32),
+        None,
+        **lk_params
+    )
+
+    if refined_pts is None or status is None:
+        return src_pts, dst_pts, mask
+
+    # Keep only points where LK succeeded
+    lk_good = status.ravel() == 1
+    if lk_good.sum() < 4:
+        return src_pts, dst_pts, mask
+
+    return (
+        src_inliers[lk_good],
+        refined_pts[lk_good],
+        np.ones((lk_good.sum(), 1), dtype=np.uint8)
+    )
+
+
 def subpixel_refinement(img1, img2):
     """
     Refines alignment to sub-pixel accuracy using phase correlation.
-
-    What is sub-pixel accuracy?
-    - Normal matching finds points accurate to ±1 pixel
-    - Sub-pixel means accuracy of 0.1-0.5 pixels
-    - ISRO explicitly requires sub-pixel accuracy
-
-    How phase correlation works (simple):
-    - Takes two aligned images
-    - Uses math (Fourier Transform) to find the tiny remaining shift
-    - Returns correction in x and y direction (can be fractional like 0.3 pixels)
-
-    Parameters:
-        img1: reference image (float)
-        img2: warped source image (float)
-
-    Returns:
-        shift: (x_shift, y_shift) in sub-pixel units
     """
-    # Convert to float for precise calculation
     f1 = img1.astype(np.float64)
     f2 = img2.astype(np.float64)
-
-    # Use OpenCV's phase correlation
     shift, response = cv2.phaseCorrelate(f1, f2)
-
     return shift, response
 
 

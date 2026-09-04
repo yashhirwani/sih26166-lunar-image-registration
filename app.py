@@ -88,8 +88,8 @@ with st.sidebar:
 
     method = st.selectbox(
         "Algorithm",
-        ["auto", "akaze", "sift"],
-        help="Auto = tries AKAZE first (better for illumination), falls back to SIFT"
+        ["auto", "loftr", "akaze", "sift"],
+        help="Auto = tries classical first, escalates to LoFTR if too few matches. LoFTR = deep learning, best for hard cases."
     )
 
     max_size = st.slider(
@@ -106,6 +106,7 @@ with st.sidebar:
     st.markdown("🔵 **AKAZE** — Better for illumination variation")
     st.markdown("🟢 **SIFT** — Classic, reliable, scale-invariant")
     st.markdown("🟡 **Auto** — Picks best automatically")
+    st.markdown("🔴 **LoFTR** — Deep learning, best for hard cases")
 
     st.divider()
     st.markdown("**PS Requirements:**")
@@ -116,8 +117,9 @@ with st.sidebar:
     st.markdown("✅ Registered output image")
 
 # ── Main Content ───────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📤 Upload & Run",
+    "🛰️ Real OHRC Data",
     "🔗 Match Points",
     "🎯 Registration Result",
     "📊 Metrics"
@@ -203,8 +205,124 @@ with tab1:
                 st.markdown("- Images too different in lighting")
                 st.markdown("- Try a different algorithm in settings")
 
-# ── Tab 2: Match Points ────────────────────────────────────────────
+# ── Tab 2: Real OHRC Data ──────────────────────────────────────────
 with tab2:
+    st.subheader("🛰️ Real OHRC Data — Load from .zip")
+    st.markdown("Load actual Chandrayaan-2 OHRC data directly from the downloaded zip files.")
+    st.info("💡 Tip: Use two zip files from the same date and adjacent orbits for best results. The browse PNG from each zip will be used for registration.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Source OHRC zip file path:**")
+        src_zip = st.text_input(
+            "Source zip path",
+            placeholder="/Users/kajol/Desktop/ps166/pradan.issdc.gov.in/.../ch2_ohr_ncp_....zip",
+            label_visibility="collapsed"
+        )
+
+    with col2:
+        st.markdown("**Reference OHRC zip file path:**")
+        ref_zip = st.text_input(
+            "Reference zip path",
+            placeholder="/Users/kajol/Desktop/ps166/pradan.issdc.gov.in/.../ch2_ohr_ncp_....zip",
+            label_visibility="collapsed"
+        )
+
+    load_btn = st.button("🛰️ Load Real OHRC Data", type="primary", use_container_width=True,
+                         disabled=not (src_zip and ref_zip))
+
+    if load_btn and src_zip and ref_zip:
+        with st.spinner("Loading real OHRC data from zip files..."):
+            try:
+                from src.ohrc_loader import extract_browse_png_from_zip, format_metadata_display
+
+                src_patch, src_meta = extract_browse_png_from_zip(src_zip)
+                ref_patch, ref_meta = extract_browse_png_from_zip(ref_zip)
+
+                st.session_state['ohrc_source'] = src_patch
+                st.session_state['ohrc_reference'] = ref_patch
+                st.session_state['ohrc_src_meta'] = src_meta
+                st.session_state['ohrc_ref_meta'] = ref_meta
+
+                st.success("✅ Real OHRC data loaded successfully!")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.image(src_patch, caption=f"Source patch {src_patch.shape}", use_container_width=True)
+                    st.code(format_metadata_display(src_meta))
+                with col2:
+                    st.image(ref_patch, caption=f"Reference patch {ref_patch.shape}", use_container_width=True)
+                    st.code(format_metadata_display(ref_meta))
+
+                # Show sun angle comparison
+                src_sun = src_meta['sun_elevation']
+                ref_sun = ref_meta['sun_elevation']
+                sun_delta = abs(src_sun - ref_sun)
+
+                st.divider()
+                st.subheader("☀️ Illumination Analysis")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Source Sun Elevation", f"{src_sun:.2f}°", src_meta['illumination_difficulty'].split('(')[0])
+                with c2:
+                    st.metric("Reference Sun Elevation", f"{ref_sun:.2f}°", ref_meta['illumination_difficulty'].split('(')[0])
+                with c3:
+                    st.metric("Sun Angle Delta", f"{sun_delta:.2f}°",
+                             "Hard case" if sun_delta > 20 else "Medium" if sun_delta > 5 else "Easy")
+
+                # Run registration on real data
+                st.session_state['ohrc_source'] = src_patch
+                st.session_state['ohrc_reference'] = ref_patch
+                st.session_state['ohrc_src_meta'] = src_meta
+                st.session_state['ohrc_ref_meta'] = ref_meta
+                st.session_state['ohrc_ready'] = True
+
+            except Exception as e:
+                st.error(f"❌ Failed to load OHRC data: {str(e)}")
+
+    # Register button outside the load block so it persists
+    if st.session_state.get('ohrc_ready'):
+        if st.button("🚀 Register Real OHRC Data", type="primary", use_container_width=True):
+            with st.spinner("Running registration on real OHRC data..."):
+                try:
+                    from src.pipeline import run_pipeline
+                    src_patch = st.session_state['ohrc_source']
+                    ref_patch = st.session_state['ohrc_reference']
+                    src_meta = st.session_state['ohrc_src_meta']
+                    ref_meta = st.session_state['ohrc_ref_meta']
+                    result = run_pipeline(
+                        src_patch, ref_patch,
+                        method=method,
+                        max_size=max_size,
+                        src_sun_elevation=src_meta['sun_elevation'],
+                        ref_sun_elevation=ref_meta['sun_elevation']
+                    )
+                    st.session_state['result'] = result
+                    metrics = result['metrics']
+                    st.success(f"✅ Registration complete! Algorithm: {result['method']}")
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
+                        st.metric("RMSE", f"{metrics['rmse']:.4f} px")
+                    with c2:
+                        st.metric("Inlier Count", metrics['inlier_count'])
+                    with c3:
+                        st.metric("Inlier Ratio", f"{metrics['inlier_ratio']:.2%}")
+                    with c4:
+                        st.metric("Spatial Score", f"{metrics['spatial_score']:.4f}")
+                    st.info("Check Match Points, Registration Result and Metrics tabs for full details")
+                except Exception as e:
+                    st.error(f"❌ Registration failed: {str(e)}")
+
+    elif not (src_zip and ref_zip):
+        st.info("Enter paths to two OHRC zip files to load real Chandrayaan-2 data")
+
+        # Show example paths
+        st.markdown("**Example zip file location:**")
+        st.code("/Users/kajol/Desktop/ps166/pradan.issdc.gov.in/ch2/protected/downloadData/POST_OD/isda_archive/ch2_bundle/cho_bundle/nop/ohr_collection/data/calibrated/20260102/ch2_ohr_ncp_20260102T1224107393_d_img_d18.zip")
+
+# ── Tab 3: Match Points ────────────────────────────────────────────
+with tab3:
     st.subheader("🔗 Match Point Visualization")
     st.markdown("Green lines = correct matches (inliers) | Red lines = wrong matches (outliers)")
 
@@ -229,10 +347,10 @@ with tab2:
             mime="image/png"
         )
     else:
-        st.info("Run the registration first (Tab 1)")
+        st.info("Run the registration first (Tab 1 or Tab 2)")
 
-# ── Tab 3: Registration Result ─────────────────────────────────────
-with tab3:
+# ── Tab 4: Registration Result ─────────────────────────────────────
+with tab4:
     st.subheader("🎯 Registration Result")
 
     if 'result' in st.session_state:
@@ -280,8 +398,8 @@ with tab3:
     else:
         st.info("Run the registration first (Tab 1)")
 
-# ── Tab 4: Metrics ─────────────────────────────────────────────────
-with tab4:
+# ── Tab 5: Metrics ─────────────────────────────────────────────────
+with tab5:
     st.subheader("📊 Evaluation Metrics")
 
     if 'result' in st.session_state:
