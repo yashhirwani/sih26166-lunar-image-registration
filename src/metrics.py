@@ -12,6 +12,65 @@ Metrics explained:
 
 import numpy as np
 
+# ── Reliability constants ──────────────────────────────────────────
+# Homography has 8 DOF; 4 correspondences = exact fit (RMSE always ~0, meaningless).
+MIN_INLIERS_DEGENERATE = 8   # at or below this, fit is statistically unreliable
+MIN_INLIERS_RELIABLE   = 10  # below this, cap confidence regardless of RMSE/ratio
+
+
+def assess_reliability(inlier_count: int, inlier_ratio: float, spatial_score: float) -> dict:
+    """
+    Determines whether a registration result is statistically trustworthy,
+    independent of how good RMSE looks.
+
+    A homography fit with too few inlier points can report a perfect RMSE
+    purely because it is underdetermined (4 points × 2 coords = 8 equations
+    for 8 unknowns → always exact), not because the match is correct.
+
+    Returns:
+        {
+            "degenerate_fit"    : bool,   True if inlier_count <= MIN_INLIERS_DEGENERATE
+            "confidence"        : str,    "high" | "medium" | "low" | "failed"
+            "reliability_reason": str,    human-readable explanation for the UI
+        }
+    """
+    degenerate = inlier_count <= MIN_INLIERS_DEGENERATE
+
+    if degenerate:
+        return {
+            "degenerate_fit": True,
+            "confidence": "failed",
+            "reliability_reason": (
+                f"Only {inlier_count} inlier(s) found. A homography needs "
+                f"8+ points to be statistically checkable; at {inlier_count} the "
+                f"fit is mathematically forced to look exact and RMSE is not meaningful."
+            ),
+        }
+
+    if inlier_count < MIN_INLIERS_RELIABLE:
+        return {
+            "degenerate_fit": False,
+            "confidence": "low",
+            "reliability_reason": (
+                f"Only {inlier_count} inliers (below the {MIN_INLIERS_RELIABLE}-point "
+                f"reliability floor). Metrics are reported but should be treated cautiously."
+            ),
+        }
+
+    # Above the floor: base confidence on ratio and spatial distribution.
+    if inlier_ratio >= 0.5 and spatial_score >= 0.7:
+        confidence = "high"
+    elif inlier_ratio >= 0.25 and spatial_score >= 0.4:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "degenerate_fit": False,
+        "confidence": confidence,
+        "reliability_reason": "",
+    }
+
 
 def compute_all_metrics(src_pts, dst_pts, M, mask, img_shape, grid_size=8):
     """
@@ -75,6 +134,17 @@ def compute_all_metrics(src_pts, dst_pts, M, mask, img_shape, grid_size=8):
         dst_inliers.reshape(-1, 2), img_shape, grid_size
     )
 
+    # --- Reliability assessment ---
+    # Detects degenerate fits and sets a meaningful confidence level
+    reliability = assess_reliability(
+        inlier_count=metrics['inlier_count'],
+        inlier_ratio=metrics['inlier_ratio'],
+        spatial_score=metrics['spatial_score'],
+    )
+    metrics['degenerate_fit']     = reliability['degenerate_fit']
+    metrics['confidence']         = reliability['confidence']
+    metrics['reliability_reason'] = reliability['reliability_reason']
+
     return metrics
 
 
@@ -134,15 +204,11 @@ def compute_spatial_distribution_score(points, img_shape, grid_size=8):
 def format_metrics_report(metrics, method_name="SIFT"):
     """
     Formats metrics into a readable report string.
-
-    Parameters:
-        metrics: dictionary from compute_all_metrics
-        method_name: name of algorithm used
-
-    Returns:
-        formatted string report
     """
     sub_pixel = "✅ YES" if metrics['rmse'] < 1.0 else "❌ NO"
+    confidence = metrics.get('confidence', 'N/A').upper()
+    degenerate = metrics.get('degenerate_fit', False)
+    degen_flag = "⚠️ YES — RMSE not meaningful" if degenerate else "No"
 
     report = f"""
 ╔══════════════════════════════════════════╗
@@ -157,6 +223,12 @@ def format_metrics_report(metrics, method_name="SIFT"):
 ║  Total Matches    : {metrics['total_matches']:<22}║
 ║  Inlier Ratio     : {metrics['inlier_ratio']:<22.4f}║
 ║  Spatial Score    : {metrics['spatial_score']:<22.4f}║
+║  Confidence       : {confidence:<22}║
+║  Degenerate Fit   : {degen_flag:<22}║
 ╚══════════════════════════════════════════╝
 """
+    if degenerate:
+        report += f"\n⚠️  WARNING: {metrics.get('reliability_reason', '')}\n"
+    elif metrics.get('reliability_reason'):
+        report += f"\nℹ️  NOTE: {metrics.get('reliability_reason', '')}\n"
     return report

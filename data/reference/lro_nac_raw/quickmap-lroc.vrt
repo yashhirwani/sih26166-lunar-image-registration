@@ -1,0 +1,44 @@
+<VRTDataset rasterXSize="1434" rasterYSize="835">
+  <GeoTransform>-48289.4668278,200,0,-1645005.7435191,0,-200</GeoTransform>
+  <SRS>+proj=ortho +a=1737400 +b=1737400 +lat_0=0.0 +lon_0=0.0 +units=m +over +no_defs +x_0=0 +y_0=0</SRS>
+  <VRTRasterBand dataType="Byte" band="1">
+    <ColorInterp>Red</ColorInterp>
+    <SimpleSource>
+      <SourceBand>1</SourceBand>
+      <SourceFilename relativeToVRT="1">quickmap-lroc.png</SourceFilename>
+      <SourceProperties RasterXSize="1434" RasterYSize="835" DataType="Byte" BlockXSize="1434" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+      <DstRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+    </SimpleSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Byte" band="2">
+    <ColorInterp>Green</ColorInterp>
+    <SimpleSource>
+      <SourceBand>2</SourceBand>
+      <SourceFilename relativeToVRT="1">quickmap-lroc.png</SourceFilename>
+      <SourceProperties RasterXSize="1434" RasterYSize="835" DataType="Byte" BlockXSize="1434" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+      <DstRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+    </SimpleSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Byte" band="3">
+    <ColorInterp>Blue</ColorInterp>
+    <SimpleSource>
+      <SourceBand>3</SourceBand>
+      <SourceFilename relativeToVRT="1">quickmap-lroc.png</SourceFilename>
+      <SourceProperties RasterXSize="1434" RasterYSize="835" DataType="Byte" BlockXSize="1434" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+      <DstRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+    </SimpleSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Byte" band="4">
+    <ColorInterp>Alpha</ColorInterp>
+    <SimpleSource>
+      <SourceBand>4</SourceBand>
+      <SourceFilename relativeToVRT="1">quickmap-lroc.png</SourceFilename>
+      <SourceProperties RasterXSize="1434" RasterYSize="835" DataType="Byte" BlockXSize="1434" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+      <DstRect xOff="0" yOff="0" xSize="1434" ySize="835" />
+    </SimpleSource>
+  </VRTRasterBand>
+</VRTDataset>
