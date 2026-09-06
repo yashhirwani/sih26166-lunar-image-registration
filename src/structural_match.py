@@ -41,41 +41,66 @@ warnings.filterwarnings('ignore')
 # ── Phase congruency parameters (Kovesi recommended defaults) ─────────────────
 _PC_PARAMS = dict(
     nscale=4,          # number of wavelet scales
-    norient=6,         # number of orientations (6 = 30° apart)
+    norient=8,         # number of orientations — increased 6→8 (45° apart instead of 30°)
+                       # 8 orientations improves sensitivity to diagonal edges common
+                       # in crater rims and ridges on lunar terrain
     minWaveLength=3,   # minimum wavelength of filter in pixels
     mult=2.1,          # scaling factor between successive filter wavelengths
     sigmaOnf=0.55,     # bandwidth of log-Gabor filter
 )
 
 
-def compute_phase_congruency_map(image: np.ndarray) -> np.ndarray:
+def compute_phase_congruency_map(image: np.ndarray,
+                                  shadow_threshold: int = 10) -> np.ndarray:
     """
     Computes a phase congruency magnitude map from a grayscale image.
 
     Phase congruency highlights structural features (edges, ridges, corners)
     based on phase alignment across frequency components, not intensity
     gradient magnitude.  Shadows and brightness shifts change raw intensity
-    but leave phase structure largely intact — making this representation
-    robust to the illumination variation challenge in PS166.
+    but leave phase structure largely intact.
+
+    Shadow masking (new):
+    Pixels at or below shadow_threshold brightness are masked out BEFORE
+    keypoint detection.  Pure-shadow regions contain no real surface
+    structure — only noise that phase congruency would otherwise treat as
+    edges.  Masking these out prevents false keypoints in shadow regions
+    and concentrates matching on genuinely lit, structurally informative areas.
+
+    norient=8 (changed from 6):
+    8 orientations at 22.5° intervals instead of 6 at 30°. More orientations
+    means better sensitivity to diagonal crater rims and ridge lines that fall
+    between the 30°-spaced orientation bins.
 
     Parameters:
-        image : np.ndarray — grayscale (H×W) or BGR (H×W×3) input
+        image            : np.ndarray — grayscale (H×W) or BGR (H×W×3) input
+        shadow_threshold : pixels at or below this brightness are masked as shadow
 
     Returns:
         np.ndarray — uint8 (H×W), values 0-255, normalised PC magnitude map
+                     with shadow regions zeroed out
     """
     from phasepack import phasecong
 
-    # Ensure single-channel float input
     if image.ndim == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     img_float = image.astype(np.float64)
 
-    # Compute PC — result[0] is the magnitude map M (confirmed by API probe)
-    result = phasecong(img_float, **_PC_PARAMS)
-    pc_map = result[0]   # shape (H, W), float64
+    # ── Shadow mask ────────────────────────────────────────────────
+    shadow_mask = image <= shadow_threshold
+    shadow_frac = shadow_mask.mean()
+    if shadow_frac > 0.01:
+        print(f"         [PC] shadow mask: {shadow_frac:.1%} of pixels zeroed "
+              f"(threshold={shadow_threshold})")
 
-    # Normalise to uint8 for compatibility with SIFT/AKAZE
+    # ── Phase congruency ───────────────────────────────────────────
+    result  = phasecong(img_float, **_PC_PARAMS)
+    pc_map  = result[0].copy()   # shape (H,W), float64
+
+    # Zero out shadow regions — no real structure there
+    pc_map[shadow_mask] = 0.0
+
+    # Normalise to uint8
     pc_min, pc_max = pc_map.min(), pc_map.max()
     pc_norm = (
         (pc_map - pc_min) / (pc_max - pc_min + 1e-8) * 255
@@ -124,4 +149,4 @@ def detect_and_match_structural(
 
     if detector == "akaze":
         return detect_and_match_akaze(pc1, pc2)
-    return detect_and_match_sift(pc1, pc2)
+    return detect_and_match_sift(pc1, pc2, ratio_threshold=0.85)

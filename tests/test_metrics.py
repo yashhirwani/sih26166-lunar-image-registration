@@ -136,3 +136,52 @@ def test_hard_case_real_values():
     result = assess_reliability(inlier_count=4, inlier_ratio=0.267, spatial_score=0.333)
     assert result["degenerate_fit"] is True
     assert result["confidence"] == "failed"
+
+
+# ── Affine transform_type tests ───────────────────────────────────
+
+def test_affine_4_inliers_not_degenerate():
+    """5 inliers with affine (6 DOF) = NOT degenerate — has slack equations."""
+    result = assess_reliability(
+        inlier_count=5, inlier_ratio=0.5, spatial_score=0.5,
+        transform_type="affine"
+    )
+    assert result["degenerate_fit"] is False
+    assert result["confidence"] == "low"   # below reliable floor (6) but not degenerate
+
+
+def test_affine_degenerate_at_4():
+    """4 inliers with affine: degenerate threshold is 4, so exactly 4 = degenerate."""
+    result = assess_reliability(
+        inlier_count=4, inlier_ratio=0.5, spatial_score=0.5,
+        transform_type="affine"
+    )
+    # MIN_INLIERS_DEGENERATE_AFFINE = 4, so 4 <= 4 → degenerate
+    assert result["degenerate_fit"] is True
+
+
+def test_affine_5_inliers_not_degenerate():
+    """5 inliers with affine = not degenerate (above floor of 4)."""
+    result = assess_reliability(
+        inlier_count=5, inlier_ratio=0.6, spatial_score=0.6,
+        transform_type="affine"
+    )
+    assert result["degenerate_fit"] is False
+    assert result["confidence"] == "low"   # below reliable floor (6)
+
+
+def test_affine_high_confidence():
+    """8 inliers with affine + good ratio = high confidence."""
+    result = assess_reliability(
+        inlier_count=8, inlier_ratio=0.6, spatial_score=0.8,
+        transform_type="affine"
+    )
+    assert result["degenerate_fit"] is False
+    assert result["confidence"] == "high"
+
+
+def test_homography_default_unchanged():
+    """Default transform_type='homography' — existing behaviour preserved."""
+    result = assess_reliability(inlier_count=4, inlier_ratio=0.5, spatial_score=0.5)
+    assert result["degenerate_fit"] is True
+    assert result["confidence"] == "failed"

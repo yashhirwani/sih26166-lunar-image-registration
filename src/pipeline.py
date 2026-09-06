@@ -28,7 +28,8 @@ from .preprocess import preprocess_pair, preprocess_with_sun_angle, preprocess_p
 from .match import detect_and_match_sift, detect_and_match_akaze, enforce_uniform_distribution
 from .loftr_match import detect_and_match_loftr, loftr_to_opencv_matches, create_fake_keypoints, load_loftr
 from .structural_match import detect_and_match_structural
-from .transform import estimate_homography_ransac, warp_image, subpixel_refinement
+from .transform import (estimate_homography_ransac, warp_image, subpixel_refinement,
+                         estimate_transform_adaptive, warp_image_adaptive, compute_rmse_adaptive)
 from .metrics import compute_all_metrics, format_metrics_report, assess_reliability
 from .visualize import draw_matches, create_checkerboard, create_side_by_side, create_difference_image
 
@@ -99,19 +100,21 @@ def _score_result(src_pts, dst_pts, M, mask):
 def _run_method_safe(name, fn, *args, **kwargs):
     """
     Runs a matching function safely. Returns (src_pts, dst_pts, kp1, kp2, matches, score) or None.
+    Uses estimate_transform_adaptive for scoring so affine is used for small match sets.
     """
     try:
         src_pts, dst_pts, kp1, kp2, matches = fn(*args, **kwargs)
         if len(matches) < 4:
             return None
-        # Quick RANSAC to get inliers for scoring
+        # Use adaptive transform for scoring — avoids penalising good matches
+        # that happen to be few in number (affine handles these correctly)
         try:
-            M, mask, _, _ = estimate_homography_ransac(
+            tr = estimate_transform_adaptive(
                 src_pts[:min(len(src_pts), 500)],
                 dst_pts[:min(len(dst_pts), 500)],
                 reproj_threshold=3.0
             )
-            score = _score_result(src_pts, dst_pts, M, mask)
+            score = _score_result(src_pts, dst_pts, tr['transform_matrix'], tr['inlier_mask'])
         except Exception:
             score = len(matches) * 0.1  # fallback score
         print(f"         [{name}] {len(matches)} matches, score={score:.2f}")
@@ -119,7 +122,6 @@ def _run_method_safe(name, fn, *args, **kwargs):
     except Exception as e:
         print(f"         [{name}] failed: {e}")
         return None
-    """Load and run LightGlue. Returns (src_pts, dst_pts, kp1, kp2, matches) or raises."""
     global _lightglue_extractor, _lightglue_matcher, _lightglue_device
     from .lightglue_match import (detect_and_match_lightglue,
                                    lightglue_to_opencv_keypoints,
@@ -357,9 +359,14 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
     print(f"         After distribution filter: {len(good_matches_u)}")
 
     # ── Step 4: Homography estimation (RANSAC) ─────────────────────
-    print("\n[Step 4] Estimating homography (RANSAC)...")
+    print("\n[Step 4] Estimating transform (adaptive: homography or affine)...")
     try:
-        M, mask, num_inliers, inlier_ratio = estimate_homography_ransac(src_pts_u, dst_pts_u)
+        transform_result = estimate_transform_adaptive(src_pts_u, dst_pts_u)
+        M           = transform_result['transform_matrix']
+        mask        = transform_result['inlier_mask']
+        num_inliers = transform_result['num_inliers']
+        inlier_ratio= transform_result['inlier_ratio']
+        ttype       = transform_result['transform_type']
     except Exception as e:
         return _make_failure_result(
             f"Geometric estimation failed: {e}. "
@@ -367,28 +374,30 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
             time.time() - start_time)
 
     result['homography_matrix'] = M
-    result['ransac_mask'] = mask
+    result['transform_type']    = ttype
+    result['ransac_mask']       = mask
+    print(f"         Transform type : {ttype.upper()}")
     print(f"         Inliers: {num_inliers} / {len(good_matches_u)}")
     print(f"         Inlier ratio: {inlier_ratio:.2%}")
 
     if num_inliers < 4:
         return _make_failure_result(
             f"Only {num_inliers} inliers after outlier rejection. "
-            f"Matches found but geometrically inconsistent — images likely from different regions.",
+            f"Matches found but geometrically inconsistent — images likely from different regions "
+            f"or pre-alignment insufficient. Try without geo-assist or use a different pair.",
             time.time() - start_time)
 
     # ── Step 5: Image warping ──────────────────────────────────────
     print("\n[Step 5] Warping source image...")
     try:
-        warped_img = warp_image(img1_clean, M, img2_clean.shape)
+        warped_img = warp_image_adaptive(img1_clean, transform_result, img2_clean.shape)
         result['registered_image'] = warped_img
     except Exception as e:
         return _make_failure_result(f"Warping failed: {e}", time.time() - start_time)
 
-    # Check if warp produced a mostly-black result (degenerate homography)
     if warped_img.mean() < 5:
         return _make_failure_result(
-            "Warped image is mostly black — homography is degenerate. "
+            "Warped image is mostly black — transform is degenerate. "
             "Try a different algorithm or image pair.",
             time.time() - start_time)
 
@@ -421,7 +430,10 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
 
     # ── Step 7: Metrics ────────────────────────────────────────────
     print("\n[Step 7] Computing evaluation metrics...")
-    metrics = compute_all_metrics(src_pts_u, dst_pts_u, M, mask, img1_clean.shape)
+    metrics = compute_all_metrics(
+        src_pts_u, dst_pts_u, M, mask, img1_clean.shape,
+        transform_result=transform_result
+    )
     metrics['processing_time'] = time.time() - start_time
     result['metrics'] = metrics
     result['metrics_report'] = format_metrics_report(metrics, used_method)
@@ -900,9 +912,17 @@ def register_with_geo_assist(
               f"running feature matching on pre-aligned pair")
 
         # ── Step G-5: Standard pipeline on pre-warped pair ─────────
+        # Pass sun elevations so preprocessing adapts to lighting conditions
+        src_sun = (source_meta or {}).get('sun_elevation')
+        ref_sun = (reference_meta or {}).get('sun_elevation')
+
         result = run_pipeline(
             pre_warped, reference_image,
-            method=method, max_size=max_size
+            method=method, max_size=max_size,
+            src_sun_elevation=src_sun,
+            ref_sun_elevation=ref_sun,
+            src_metadata=source_meta,
+            ref_metadata=reference_meta,
         )
 
         # ── Step G-6: Compose homographies ────────────────────────
@@ -934,9 +954,15 @@ def register_with_geo_assist(
     except Exception as e:
         print(f"\n[geo_assist] ⚠️ Geo pre-alignment failed: {e}")
         print(f"[geo_assist] Falling back to standard pipeline without pre-alignment")
+        src_sun = (source_meta or {}).get('sun_elevation')
+        ref_sun = (reference_meta or {}).get('sun_elevation')
         result = run_pipeline(
             source_image, reference_image,
-            method=method, max_size=max_size
+            method=method, max_size=max_size,
+            src_sun_elevation=src_sun,
+            ref_sun_elevation=ref_sun,
+            src_metadata=source_meta,
+            ref_metadata=reference_meta,
         )
         result['final_homography_composed'] = False
 

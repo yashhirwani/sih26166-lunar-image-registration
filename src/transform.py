@@ -215,3 +215,174 @@ def compute_rmse(src_pts, dst_pts, M, mask):
     rmse = np.sqrt(np.mean(squared_distances))
 
     return float(rmse)
+
+
+def estimate_transform_adaptive(
+    src_pts: np.ndarray,
+    dst_pts: np.ndarray,
+    degenerate_threshold: int = 8,
+    reproj_threshold: float = 3.0,
+) -> dict:
+    """
+    Estimates a geometric transform, automatically choosing between
+    homography and affine based on how many matched points are available.
+
+    Why this matters:
+    - Homography has 8 degrees of freedom (DOF)
+    - With exactly 4 points: 4×2=8 equations for 8 unknowns → always exact fit
+    - RMSE is forced to 0.0 — looks perfect but is mathematically meaningless
+    - Affine has 6 DOF. With 4 points: 4×2=8 equations for 6 unknowns
+    - There are 2 slack equations → RANSAC can actually reject wrong fits
+    - RMSE is now a real number that means something
+
+    Decision logic:
+    - n_points > degenerate_threshold (8) → use homography (statistically safe)
+    - n_points <= degenerate_threshold  → use affine (gives real RMSE even with 4 pts)
+
+    Parameters:
+        src_pts             : (N,1,2) or (N,2) float32 source points
+        dst_pts             : (N,1,2) or (N,2) float32 destination points
+        degenerate_threshold: max points at which homography is degenerate (default 8)
+        reproj_threshold    : RANSAC reprojection error threshold in pixels
+
+    Returns dict with keys:
+        transform_matrix : np.ndarray — 3×3 for homography, 2×3 for affine
+        transform_type   : str — "homography" or "affine"
+        inlier_mask      : np.ndarray — boolean mask of inliers
+        num_inliers      : int
+        inlier_ratio     : float
+    """
+    # Normalise shape to (N,1,2)
+    s = src_pts.reshape(-1, 1, 2).astype(np.float32)
+    d = dst_pts.reshape(-1, 1, 2).astype(np.float32)
+    n = len(s)
+
+    if n < 4:
+        raise ValueError(f"Need at least 4 points, got {n}")
+
+    # ── Try homography first if we have enough points ─────────────
+    if n > degenerate_threshold:
+        H, mask = cv2.findHomography(
+            s, d, cv2.RANSAC, reproj_threshold,
+            maxIters=2000, confidence=0.995
+        )
+        if H is not None and mask is not None:
+            n_in = int(mask.sum())
+            return {
+                "transform_matrix": H,
+                "transform_type":   "homography",
+                "inlier_mask":      mask,
+                "num_inliers":      n_in,
+                "inlier_ratio":     n_in / n,
+            }
+
+    # ── Fall back to affine ────────────────────────────────────────
+    A, mask = cv2.estimateAffinePartial2D(
+        s, d,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=reproj_threshold,
+        maxIters=2000,
+        confidence=0.995,
+    )
+    if A is None:
+        raise ValueError(
+            "Both homography and affine estimation failed. "
+            "Check that matched points are not all collinear or identical."
+        )
+
+    # cv2.estimateAffinePartial2D returns (N,1) mask
+    if mask is None:
+        mask = np.ones((n, 1), dtype=np.uint8)
+
+    n_in = int(mask.sum())
+    print(f"[estimate_transform_adaptive] AFFINE (6 DOF) — "
+          f"{n} input points, {n_in} inliers  "
+          f"(homography would be degenerate at ≤{degenerate_threshold} points)")
+
+    return {
+        "transform_matrix": A,
+        "transform_type":   "affine",
+        "inlier_mask":      mask,
+        "num_inliers":      n_in,
+        "inlier_ratio":     n_in / n,
+    }
+
+
+def warp_image_adaptive(src_img: np.ndarray, transform_result: dict,
+                         ref_shape: tuple) -> np.ndarray:
+    """
+    Warps source image using the result from estimate_transform_adaptive().
+    Branches on transform_type to call the correct OpenCV warp function:
+      homography → cv2.warpPerspective  (needs 3×3 matrix)
+      affine     → cv2.warpAffine       (needs 2×3 matrix)
+
+    Using the wrong warp function for the transform type silently produces
+    garbage — this function prevents that.
+
+    Parameters:
+        src_img          : source image (H,W) or (H,W,C)
+        transform_result : dict from estimate_transform_adaptive()
+        ref_shape        : (height, width) of reference image
+
+    Returns:
+        warped image same shape as (ref_shape[0], ref_shape[1])
+    """
+    h, w = ref_shape[0], ref_shape[1]
+    M   = transform_result["transform_matrix"]
+    ttype = transform_result["transform_type"]
+
+    if ttype == "homography":
+        return cv2.warpPerspective(
+            src_img, M, (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+    elif ttype == "affine":
+        return cv2.warpAffine(
+            src_img, M, (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+    else:
+        raise ValueError(f"Unknown transform_type '{ttype}' — expected 'homography' or 'affine'")
+
+
+def compute_rmse_adaptive(src_pts: np.ndarray, dst_pts: np.ndarray,
+                           transform_result: dict) -> tuple:
+    """
+    Computes RMSE using the correct projection function for the transform type.
+
+    For homography: cv2.perspectiveTransform
+    For affine:     cv2.transform (on homogeneous coords)
+
+    Returns:
+        (rmse, rmse_x, rmse_y)
+    """
+    M     = transform_result["transform_matrix"]
+    ttype = transform_result["transform_type"]
+    mask  = transform_result["inlier_mask"]
+
+    inlier_mask = mask.ravel() == 1
+    src_in = src_pts.reshape(-1, 2)[inlier_mask].astype(np.float32)
+    dst_in = dst_pts.reshape(-1, 2)[inlier_mask].astype(np.float32)
+
+    if len(src_in) == 0:
+        return float('inf'), float('inf'), float('inf')
+
+    if ttype == "homography":
+        proj = cv2.perspectiveTransform(
+            src_in.reshape(-1, 1, 2), M
+        ).reshape(-1, 2)
+    else:
+        # affine: M is 2×3, apply as [x,y,1] @ M.T
+        ones = np.ones((len(src_in), 1), dtype=np.float32)
+        src_h = np.hstack([src_in, ones])           # (N,3)
+        proj  = (src_h @ M.T).astype(np.float32)   # (N,2)
+
+    diff = proj - dst_in
+    rmse   = float(np.sqrt(np.mean(np.sum(diff ** 2, axis=1))))
+    rmse_x = float(np.sqrt(np.mean(diff[:, 0] ** 2)))
+    rmse_y = float(np.sqrt(np.mean(diff[:, 1] ** 2)))
+    return rmse, rmse_x, rmse_y

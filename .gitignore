@@ -18,6 +18,8 @@ env/
 # Large data files — don't push to git
 data/raw/
 data/patches/*.img
+data/easy_testzip/
+data/hard_testzip/
 *.img
 *.zip
 *.npz

@@ -17,47 +17,67 @@ import numpy as np
 MIN_INLIERS_DEGENERATE = 8   # at or below this, fit is statistically unreliable
 MIN_INLIERS_RELIABLE   = 10  # below this, cap confidence regardless of RMSE/ratio
 
+# Affine has 6 DOF; 4 correspondences give 2 slack equations → not degenerate
+MIN_INLIERS_DEGENERATE_AFFINE = 4
+MIN_INLIERS_RELIABLE_AFFINE   = 6
 
-def assess_reliability(inlier_count: int, inlier_ratio: float, spatial_score: float) -> dict:
+
+def assess_reliability(
+    inlier_count: int,
+    inlier_ratio: float,
+    spatial_score: float,
+    transform_type: str = "homography",
+) -> dict:
     """
     Determines whether a registration result is statistically trustworthy,
     independent of how good RMSE looks.
 
-    A homography fit with too few inlier points can report a perfect RMSE
-    purely because it is underdetermined (4 points × 2 coords = 8 equations
-    for 8 unknowns → always exact), not because the match is correct.
+    Thresholds depend on transform_type:
+    - homography (8 DOF): degenerate at ≤8 inliers, reliable floor at 10
+    - affine     (6 DOF): degenerate at ≤4 inliers, reliable floor at 6
+      (4 points give 8 equations for 6 unknowns → 2 slack → RANSAC can reject)
 
     Returns:
         {
-            "degenerate_fit"    : bool,   True if inlier_count <= MIN_INLIERS_DEGENERATE
-            "confidence"        : str,    "high" | "medium" | "low" | "failed"
-            "reliability_reason": str,    human-readable explanation for the UI
+            "degenerate_fit"    : bool
+            "confidence"        : str  — "high"|"medium"|"low"|"failed"
+            "reliability_reason": str
         }
     """
-    degenerate = inlier_count <= MIN_INLIERS_DEGENERATE
+    if transform_type == "affine":
+        min_degen    = MIN_INLIERS_DEGENERATE_AFFINE
+        min_reliable = MIN_INLIERS_RELIABLE_AFFINE
+        dof_label    = "affine (6 DOF)"
+    else:
+        min_degen    = MIN_INLIERS_DEGENERATE
+        min_reliable = MIN_INLIERS_RELIABLE
+        dof_label    = "homography (8 DOF)"
+
+    degenerate = inlier_count <= min_degen
 
     if degenerate:
         return {
             "degenerate_fit": True,
             "confidence": "failed",
             "reliability_reason": (
-                f"Only {inlier_count} inlier(s) found. A homography needs "
-                f"8+ points to be statistically checkable; at {inlier_count} the "
-                f"fit is mathematically forced to look exact and RMSE is not meaningful."
+                f"Only {inlier_count} inlier(s) found. "
+                f"A {dof_label} fit needs more points to be statistically checkable; "
+                f"at {inlier_count} the fit may be forced exact and RMSE is not meaningful."
             ),
         }
 
-    if inlier_count < MIN_INLIERS_RELIABLE:
+    if inlier_count < min_reliable:
         return {
             "degenerate_fit": False,
             "confidence": "low",
             "reliability_reason": (
-                f"Only {inlier_count} inliers (below the {MIN_INLIERS_RELIABLE}-point "
-                f"reliability floor). Metrics are reported but should be treated cautiously."
+                f"Only {inlier_count} inliers (below the {min_reliable}-point "
+                f"reliability floor for {dof_label}). "
+                f"Metrics reported but treat cautiously."
             ),
         }
 
-    # Above the floor: base confidence on ratio and spatial distribution.
+    # Above the floor — base confidence on ratio and spatial distribution
     if inlier_ratio >= 0.5 and spatial_score >= 0.7:
         confidence = "high"
     elif inlier_ratio >= 0.25 and spatial_score >= 0.4:
@@ -72,44 +92,51 @@ def assess_reliability(inlier_count: int, inlier_ratio: float, spatial_score: fl
     }
 
 
-def compute_all_metrics(src_pts, dst_pts, M, mask, img_shape, grid_size=8):
+def compute_all_metrics(src_pts, dst_pts, M, mask, img_shape, grid_size=8,
+                        transform_result=None):
     """
     Computes all metrics in one call.
 
     Parameters:
-        src_pts: matched points in source image
-        dst_pts: matched points in reference image
-        M: homography matrix
-        mask: inlier mask from RANSAC (True = correct match)
-        img_shape: (height, width) of image
-        grid_size: grid size for spatial distribution score
-
+        src_pts          : matched points in source image
+        dst_pts          : matched points in reference image
+        M                : transform matrix (3×3 homography or 2×3 affine)
+        mask             : inlier mask from RANSAC (True = correct match)
+        img_shape        : (height, width) of image
+        grid_size        : grid size for spatial distribution score
+        transform_result : optional dict from estimate_transform_adaptive()
+                           if provided, uses compute_rmse_adaptive for correct RMSE
     Returns:
         dictionary with all metrics
     """
     import cv2
 
     metrics = {}
+    ttype = (transform_result or {}).get('transform_type', 'homography')
 
     # --- RMSE ---
-    # Root Mean Square Error
-    # Measures average alignment error in pixels
-    # Sub-pixel = RMSE < 1.0
     inlier_mask = mask.ravel() == 1
     src_inliers = src_pts[inlier_mask]
     dst_inliers = dst_pts[inlier_mask]
 
     if len(src_inliers) > 0 and M is not None:
-        src_transformed = cv2.perspectiveTransform(src_inliers, M)
-        diff = src_transformed.reshape(-1, 2) - dst_inliers.reshape(-1, 2)
-        squared_distances = np.sum(diff ** 2, axis=1)
-        metrics['rmse'] = float(np.sqrt(np.mean(squared_distances)))
-        metrics['rmse_x'] = float(np.sqrt(np.mean(diff[:, 0] ** 2)))
-        metrics['rmse_y'] = float(np.sqrt(np.mean(diff[:, 1] ** 2)))
+        if transform_result is not None:
+            from .transform import compute_rmse_adaptive
+            rmse, rmse_x, rmse_y = compute_rmse_adaptive(src_pts, dst_pts, transform_result)
+        else:
+            # Legacy path: homography only
+            src_transformed = cv2.perspectiveTransform(src_inliers, M)
+            diff = src_transformed.reshape(-1, 2) - dst_inliers.reshape(-1, 2)
+            squared = np.sum(diff ** 2, axis=1)
+            rmse   = float(np.sqrt(np.mean(squared)))
+            rmse_x = float(np.sqrt(np.mean(diff[:, 0] ** 2)))
+            rmse_y = float(np.sqrt(np.mean(diff[:, 1] ** 2)))
+
+        metrics['rmse']   = rmse
+        metrics['rmse_x'] = rmse_x
+        metrics['rmse_y'] = rmse_y
     else:
-        metrics['rmse'] = float('inf')
-        metrics['rmse_x'] = float('inf')
-        metrics['rmse_y'] = float('inf')
+        metrics['rmse'] = metrics['rmse_x'] = metrics['rmse_y'] = float('inf')
 
     # --- Inlier Count ---
     # Number of correct matches after RANSAC filtering
@@ -135,15 +162,16 @@ def compute_all_metrics(src_pts, dst_pts, M, mask, img_shape, grid_size=8):
     )
 
     # --- Reliability assessment ---
-    # Detects degenerate fits and sets a meaningful confidence level
     reliability = assess_reliability(
         inlier_count=metrics['inlier_count'],
         inlier_ratio=metrics['inlier_ratio'],
         spatial_score=metrics['spatial_score'],
+        transform_type=ttype,
     )
     metrics['degenerate_fit']     = reliability['degenerate_fit']
     metrics['confidence']         = reliability['confidence']
     metrics['reliability_reason'] = reliability['reliability_reason']
+    metrics['transform_type']     = ttype
 
     return metrics
 
@@ -209,12 +237,14 @@ def format_metrics_report(metrics, method_name="SIFT"):
     confidence = metrics.get('confidence', 'N/A').upper()
     degenerate = metrics.get('degenerate_fit', False)
     degen_flag = "⚠️ YES — RMSE not meaningful" if degenerate else "No"
+    ttype      = metrics.get('transform_type', 'homography')
 
     report = f"""
 ╔══════════════════════════════════════════╗
 ║        REGISTRATION METRICS REPORT       ║
 ╠══════════════════════════════════════════╣
 ║  Algorithm        : {method_name:<22}║
+║  Transform        : {ttype:<22}║
 ║  RMSE             : {metrics['rmse']:<22.4f}║
 ║  RMSE-X           : {metrics['rmse_x']:<22.4f}║
 ║  RMSE-Y           : {metrics['rmse_y']:<22.4f}║

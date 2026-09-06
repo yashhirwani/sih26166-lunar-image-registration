@@ -511,6 +511,15 @@ with tab2:
                         st.metric("Sun Angle Delta", f"{sun_delta:.2f}°",
                                   "Hard" if sun_delta > 20 else "Medium" if sun_delta > 5 else "Easy")
 
+                    # Warn if sun angle delta is large
+                    if sun_delta > 8:
+                        st.warning(
+                            f"⚠️ **Large sun angle difference ({sun_delta:.1f}°).** "
+                            f"The same surface features look very different between these two images. "
+                            f"Feature matching may find few inliers even though the geographic overlap is good. "
+                            f"This is the core challenge of PS166 — illumination variation."
+                        )
+
                     # Overlap analysis
                     st.divider()
                     st.subheader("🗺️ Overlap Analysis")
@@ -521,7 +530,7 @@ with tab2:
                     else:
                         diff_color = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}.get(
                             overlap_info.get('difficulty', 'medium'), "⚪")
-                        st.success(f"{diff_color} {overlap_info.get('recommendation', '')}")
+                        st.success(f"{diff_color} {overlap_info.get('recommendation', '')} *(geographic overlap only — actual match quality depends on illumination similarity)*")
                     o1, o2, o3 = st.columns(3)
                     with o1:
                         st.metric("Overlap", f"{overlap_info.get('overlap_fraction', 0):.1%}")
@@ -577,7 +586,7 @@ with tab2:
                     else:
                         diff_color = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}.get(
                             overlap_info.get('difficulty', 'medium'), "⚪")
-                        st.success(f"{diff_color} {overlap_info.get('recommendation', '')}")
+                        st.success(f"{diff_color} {overlap_info.get('recommendation', '')} *(geographic overlap only — actual match quality depends on illumination)*")
                     o1, o2, o3 = st.columns(3)
                     with o1:
                         st.metric("Overlap", f"{overlap_info.get('overlap_fraction', 0):.1%}")
@@ -611,7 +620,7 @@ with tab2:
         if not cross:
             use_geo_assist = st.checkbox(
                 "🛰️ Use metadata-assisted coarse pre-alignment (uses .csv geolocation from zip)",
-                value=False,
+                value=True,
                 help="Reads the ground-coordinate .csv file from each zip to estimate a rough "
                      "pixel-to-pixel alignment before feature matching. Helps on difficult pairs "
                      "where the two images are offset by many hundreds of pixels."
@@ -735,24 +744,29 @@ with tab3:
 
     if 'result' in st.session_state:
         result = st.session_state['result']
-        match_vis = result['match_visualization']
-        st.image(match_vis, caption="Match visualization — green=correct, red=wrong", use_container_width=True)
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Matches", result['total_matches_before_filter'])
-        with col2:
-            st.metric("After Distribution Filter", result['total_matches_after_distribution'])
-        with col3:
-            st.metric("Inliers (Correct)", result['metrics']['inlier_count'])
+        if not result.get('success', True) or 'match_visualization' not in result:
+            st.warning(f"⚠️ Registration failed — no match visualization available.")
+            if result.get('failure_reason'):
+                st.error(result['failure_reason'])
+        else:
+            match_vis = result['match_visualization']
+            st.image(match_vis, caption="Match visualization — green=correct, red=wrong", use_container_width=True)
 
-        # Download match visualization
-        st.download_button(
-            "⬇️ Download Match Image",
-            data=numpy_to_bytes(match_vis),
-            file_name="match_visualization.png",
-            mime="image/png"
-        )
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Matches", result.get('total_matches_before_filter', 0))
+            with col2:
+                st.metric("After Distribution Filter", result.get('total_matches_after_distribution', 0))
+            with col3:
+                st.metric("Inliers (Correct)", result['metrics']['inlier_count'])
+
+            st.download_button(
+                "⬇️ Download Match Image",
+                data=numpy_to_bytes(match_vis),
+                file_name="match_visualization.png",
+                mime="image/png"
+            )
     else:
         st.info("Run the registration first (Tab 1 or Tab 2)")
 
@@ -763,45 +777,51 @@ with tab4:
     if 'result' in st.session_state:
         result = st.session_state['result']
 
-        view_mode = st.radio(
-            "View Mode",
-            ["Side by Side", "Checkerboard", "Difference Image"],
-            horizontal=True
-        )
-
-        if view_mode == "Side by Side":
-            st.image(result['side_by_side'],
-                    caption="Left: Reference | Right: Registered Source",
-                    use_container_width=True)
-
-        elif view_mode == "Checkerboard":
-            st.markdown("**Checkerboard view:** alternating tiles from Reference and Registered image.")
-            st.markdown("If alignment is perfect, you won't see borders between tiles.")
-            st.image(result['checkerboard'],
-                    caption="Checkerboard blend — seamless = perfect alignment",
-                    use_container_width=True)
-
-        elif view_mode == "Difference Image":
-            st.markdown("**Difference image:** bright = misaligned areas, dark = well-aligned areas")
-            st.image(result['difference_image'],
-                    caption="Difference image — darker is better",
-                    use_container_width=True)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                "⬇️ Download Registered Image",
-                data=numpy_to_bytes(result['registered_image_refined']),
-                file_name="registered_image.png",
-                mime="image/png"
+        # Guard: if registration failed, no visualizations available
+        if not result.get('success', True) or 'side_by_side' not in result:
+            st.warning("⚠️ Registration failed — no result image available.")
+            if result.get('failure_reason'):
+                st.error(result['failure_reason'])
+        else:
+            view_mode = st.radio(
+                "View Mode",
+                ["Side by Side", "Checkerboard", "Difference Image"],
+                horizontal=True
             )
-        with col2:
-            st.download_button(
-                "⬇️ Download Checkerboard",
-                data=numpy_to_bytes(result['checkerboard']),
-                file_name="checkerboard.png",
-                mime="image/png"
-            )
+
+            if view_mode == "Side by Side":
+                st.image(result['side_by_side'],
+                        caption="Left: Reference | Right: Registered Source",
+                        use_container_width=True)
+
+            elif view_mode == "Checkerboard":
+                st.markdown("**Checkerboard view:** alternating tiles from Reference and Registered image.")
+                st.markdown("If alignment is perfect, you won't see borders between tiles.")
+                st.image(result['checkerboard'],
+                        caption="Checkerboard blend — seamless = perfect alignment",
+                        use_container_width=True)
+
+            elif view_mode == "Difference Image":
+                st.markdown("**Difference image:** bright = misaligned areas, dark = well-aligned areas")
+                st.image(result['difference_image'],
+                        caption="Difference image — darker is better",
+                        use_container_width=True)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    "⬇️ Download Registered Image",
+                    data=numpy_to_bytes(result['registered_image_refined']),
+                    file_name="registered_image.png",
+                    mime="image/png"
+                )
+            with col2:
+                st.download_button(
+                    "⬇️ Download Checkerboard",
+                    data=numpy_to_bytes(result['checkerboard']),
+                    file_name="checkerboard.png",
+                    mime="image/png"
+                )
     else:
         st.info("Run the registration first (Tab 1)")
 
@@ -811,74 +831,76 @@ with tab5:
 
     if 'result' in st.session_state:
         result = st.session_state['result']
-        metrics = result['metrics']
 
-        # ── Reliability / degenerate-fit warning (MUST appear before RMSE) ──
-        if metrics.get('degenerate_fit'):
-            st.warning(
-                f"⚠️ **Result not statistically reliable:** {metrics['reliability_reason']}"
-            )
-        elif metrics.get('confidence') == 'low' and metrics.get('reliability_reason'):
-            st.info(
-                f"ℹ️ **Low-confidence result:** {metrics['reliability_reason']}"
-            )
-
-        # ── Confidence badge ──────────────────────────────────────────────
-        confidence = metrics.get('confidence', result.get('confidence', 'N/A'))
-        conf_color = {"high": "success-badge", "medium": "fail-badge",
-                      "low": "fail-badge", "failed": "fail-badge"}.get(confidence, "fail-badge")
-        conf_icon  = {"high": "🟢", "medium": "🟡", "low": "🔴", "failed": "❌"}.get(confidence, "⚪")
-        st.markdown(
-            f'<span class="{conf_color}">{conf_icon} Confidence: {confidence.upper()}</span>',
-            unsafe_allow_html=True
-        )
-
-        # ── Sub-pixel status ──────────────────────────────────────────────
-        if metrics['rmse'] < 1.0 and not metrics.get('degenerate_fit'):
-            st.markdown('<span class="success-badge">✅ Sub-pixel accuracy achieved (RMSE < 1.0)</span>', unsafe_allow_html=True)
-        elif metrics.get('degenerate_fit'):
-            st.markdown('<span class="fail-badge">⚠️ RMSE not meaningful (degenerate fit)</span>', unsafe_allow_html=True)
+        # Guard for failed results
+        if not result.get('success', True) or 'metrics' not in result:
+            st.error(f"❌ Registration failed — no metrics available.")
+            if result.get('failure_reason'):
+                st.error(result['failure_reason'])
         else:
-            st.markdown('<span class="fail-badge">⚠️ Sub-pixel not achieved (RMSE ≥ 1.0)</span>', unsafe_allow_html=True)
+            metrics = result['metrics']
 
-        st.divider()
+            # ── Reliability / degenerate-fit warning ──────────────────────
+            if metrics.get('degenerate_fit'):
+                st.warning(f"⚠️ **Result not statistically reliable:** {metrics['reliability_reason']}")
+            elif metrics.get('confidence') == 'low' and metrics.get('reliability_reason'):
+                st.info(f"ℹ️ **Low-confidence result:** {metrics['reliability_reason']}")
 
-        # ── Metrics grid ──────────────────────────────────────────────────
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            rmse_label = "⚠️ Not meaningful" if metrics.get('degenerate_fit') else (
-                "✅ Sub-pixel" if metrics['rmse'] < 1.0 else "❌ Not sub-pixel"
+            # ── Confidence badge ───────────────────────────────────────────
+            confidence = metrics.get('confidence', result.get('confidence', 'N/A'))
+            conf_color = {"high": "success-badge", "medium": "fail-badge",
+                          "low": "fail-badge", "failed": "fail-badge"}.get(confidence, "fail-badge")
+            conf_icon  = {"high": "🟢", "medium": "🟡", "low": "🔴", "failed": "❌"}.get(confidence, "⚪")
+            st.markdown(f'<span class="{conf_color}">{conf_icon} Confidence: {confidence.upper()}</span>',
+                        unsafe_allow_html=True)
+
+            # ── Sub-pixel status ───────────────────────────────────────────
+            if metrics['rmse'] < 1.0 and not metrics.get('degenerate_fit'):
+                st.markdown('<span class="success-badge">✅ Sub-pixel accuracy achieved (RMSE < 1.0)</span>', unsafe_allow_html=True)
+            elif metrics.get('degenerate_fit'):
+                st.markdown('<span class="fail-badge">⚠️ RMSE not meaningful (degenerate fit)</span>', unsafe_allow_html=True)
+            else:
+                st.markdown('<span class="fail-badge">⚠️ Sub-pixel not achieved (RMSE ≥ 1.0)</span>', unsafe_allow_html=True)
+
+            st.divider()
+
+            # ── Metrics grid ───────────────────────────────────────────────
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                rmse_label = "⚠️ Not meaningful" if metrics.get('degenerate_fit') else (
+                    "✅ Sub-pixel" if metrics['rmse'] < 1.0 else "❌ Not sub-pixel"
+                )
+                st.metric("RMSE (pixels)", f"{metrics['rmse']:.4f}", rmse_label)
+                st.metric("RMSE-X", f"{metrics['rmse_x']:.4f}")
+                st.metric("RMSE-Y", f"{metrics['rmse_y']:.4f}")
+            with col2:
+                st.metric("Inlier Count", metrics['inlier_count'])
+                st.metric("Total Matches", metrics['total_matches'])
+                st.metric("Inlier Ratio", f"{metrics['inlier_ratio']:.2%}")
+            with col3:
+                st.metric("Spatial Distribution Score", f"{metrics['spatial_score']:.4f}")
+                st.metric("Processing Time", f"{metrics['processing_time']:.2f}s")
+                st.metric("Algorithm Used", result.get('method', 'N/A'))
+
+            st.divider()
+
+            # ── Full report ────────────────────────────────────────────────
+            st.subheader("Full Report")
+            st.code(result.get('metrics_report', 'No report available'))
+
+            st.download_button(
+                "⬇️ Download Metrics Report",
+                data=result.get('metrics_report', ''),
+                file_name="metrics_report.txt",
+                mime="text/plain"
             )
-            st.metric("RMSE (pixels)", f"{metrics['rmse']:.4f}", rmse_label)
-            st.metric("RMSE-X", f"{metrics['rmse_x']:.4f}")
-            st.metric("RMSE-Y", f"{metrics['rmse_y']:.4f}")
-        with col2:
-            st.metric("Inlier Count", metrics['inlier_count'])
-            st.metric("Total Matches", metrics['total_matches'])
-            st.metric("Inlier Ratio", f"{metrics['inlier_ratio']:.2%}")
-        with col3:
-            st.metric("Spatial Distribution Score", f"{metrics['spatial_score']:.4f}")
-            st.metric("Processing Time", f"{metrics['processing_time']:.2f}s")
-            st.metric("Algorithm Used", result['method'])
 
-        st.divider()
-
-        # ── Full report ───────────────────────────────────────────────────
-        st.subheader("Full Report")
-        st.code(result['metrics_report'])
-
-        # Download report
-        st.download_button(
-            "⬇️ Download Metrics Report",
-            data=result['metrics_report'],
-            file_name="metrics_report.txt",
-            mime="text/plain"
-        )
-
-        # Homography matrix
-        with st.expander("📐 Homography Matrix (Transformation Parameters)"):
-            st.markdown("This 3×3 matrix describes exactly how the source image was transformed to align with reference:")
-            st.code(str(result['homography_matrix']))
+            with st.expander("📐 Transform Matrix (Transformation Parameters)"):
+                st.markdown("This matrix describes how the source image was transformed to align with reference:")
+                H = result.get('homography_matrix')
+                ttype = metrics.get('transform_type', result.get('transform_type', 'unknown'))
+                st.caption(f"Transform type: {ttype}")
+                st.code(str(H) if H is not None else "Not available")
 
     else:
         st.info("Run the registration first (Tab 1)")
