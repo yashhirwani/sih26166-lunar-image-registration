@@ -44,26 +44,28 @@ def draw_matches(img1, kp1, img2, kp2, good_matches, mask=None, max_matches=100)
 
         # Limit number of lines drawn
         inlier_matches = inlier_matches[:max_matches]
-        outlier_matches = outlier_matches[:20]  # fewer red lines
+        outlier_matches = outlier_matches[:20]
 
-        # Draw outliers in red first (underneath)
+        # Draw inliers in green using drawMatches (thin lines, standard thickness)
         match_img = cv2.drawMatches(
             img1_color, kp1, img2_color, kp2,
-            outlier_matches, None,
-            matchColor=(0, 0, 255),      # red for outliers
+            inlier_matches, None,
+            matchColor=(0, 255, 0),      # green for inliers
             singlePointColor=(128, 128, 128),
             flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
         )
 
-        # Draw inliers in green on top
-        match_img = cv2.drawMatches(
-            img1_color, kp1, img2_color, kp2,
-            inlier_matches, match_img,
-            matchColor=(0, 255, 0),      # green for inliers
-            singlePointColor=(128, 128, 128),
-            flags=cv2.DrawMatchesFlags_DRAW_OVER_OUTIMG |
-                  cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-        )
+        # Draw outliers in RED with thick bold lines manually using cv2.line
+        # cv2.drawMatches doesn't support thickness — we draw manually instead
+        w1 = img1_color.shape[1]  # width of image 1 (offset for image 2 points)
+        for m in outlier_matches:
+            pt1 = tuple(map(int, kp1[m.queryIdx].pt))
+            pt2_raw = kp2[m.trainIdx].pt
+            pt2 = (int(pt2_raw[0]) + w1, int(pt2_raw[1]))  # offset by image 1 width
+            cv2.line(match_img, pt1, pt2, color=(0, 0, 255), thickness=3)
+            # Draw bold dots at endpoints
+            cv2.circle(match_img, pt1, radius=5, color=(0, 0, 200), thickness=-1)
+            cv2.circle(match_img, pt2, radius=5, color=(0, 0, 200), thickness=-1)
     else:
         # No mask, draw all matches in green
         matches_to_draw = good_matches[:max_matches]

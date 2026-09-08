@@ -11,4 +11,5 @@ torchvision
 pyyaml
 pytest
 rasterio
+pyproj
 phasepack

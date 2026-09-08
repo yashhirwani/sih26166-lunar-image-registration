@@ -65,26 +65,18 @@ def load_geotiff_reference(path: str, source_label: str = "LRO_reference") -> di
         )
 
     with rasterio.open(path) as ds:
-        # ── CRS guard ──────────────────────────────────────────────
         crs = ds.crs
         if crs is None:
             raise ValueError(
                 f"GeoTIFF at {path} has no CRS embedded. "
                 "Re-export from QuickMap ensuring 'geographic (lat/lon)' is selected."
             )
-        if not crs.is_geographic:
-            raise ValueError(
-                f"Reference tile CRS is projected ({crs}), not geographic. "
-                "Re-export from QuickMap in geographic (lat/lon / WGS-84 Moon) CRS, "
-                "or add reprojection before proceeding."
-            )
 
-        # ── Read band 1 as the grayscale image ─────────────────────
+        # Read band 1 as grayscale. Do NOT reproject the raster — even a
+        # projected CRS (Moon polar stereographic) is kept in native pixels.
         raw = ds.read(1)
         original_dtype = raw.dtype
 
-        # Normalise to uint8 for consistent processing downstream
-        # (CLAHE, SIFT, etc. all expect uint8 single-channel)
         if raw.dtype != np.uint8:
             raw_min, raw_max = raw.min(), raw.max()
             if raw_max > raw_min:
@@ -96,30 +88,55 @@ def load_geotiff_reference(path: str, source_label: str = "LRO_reference") -> di
             image = raw
 
         transform = ds.transform
-        bounds = ds.bounds  # left=min_lon, bottom=min_lat, right=max_lon, top=max_lat
+        bounds = ds.bounds
+        transformer = None
+        is_projected = not crs.is_geographic
 
-        # ── Corner coordinates (UL, UR, LR, LL) ───────────────────
-        corner_latlon = [
-            (bounds.top,    bounds.left),   # UL
-            (bounds.top,    bounds.right),  # UR
-            (bounds.bottom, bounds.right),  # LR
-            (bounds.bottom, bounds.left),   # LL
-        ]
+        if crs.is_geographic:
+            corner_latlon = [
+                (bounds.top,    bounds.left),
+                (bounds.top,    bounds.right),
+                (bounds.bottom, bounds.right),
+                (bounds.bottom, bounds.left),
+            ]
+            deg_to_m = (np.pi * MOON_RADIUS_M) / 180.0
+            resolution_m = abs(transform.a) * deg_to_m
+        else:
+            # Projected CRS (e.g. Moon polar stereographic, units in metres).
+            # Convert only the four corner points to geographic lat/lon for
+            # overlap detection — do NOT reproject the full raster.
+            import pyproj
+            geo_crs = crs.geodetic_crs
+            if geo_crs is None:
+                raise ValueError(
+                    f"Projected CRS has no geodetic base CRS; cannot convert "
+                    f"corners to lat/lon. CRS={crs}"
+                )
+            transformer = pyproj.Transformer.from_crs(
+                crs, geo_crs, always_xy=True
+            )
+            corners_projected = [
+                (bounds.left,  bounds.top),
+                (bounds.right, bounds.top),
+                (bounds.right, bounds.bottom),
+                (bounds.left,  bounds.bottom),
+            ]
+            corner_latlon = []
+            for x, y in corners_projected:
+                lon, lat = transformer.transform(x, y)
+                corner_latlon.append((float(lat), float(lon)))
+            resolution_m = abs(transform.a)  # already metres/pixel
 
-        # ── Resolution: degrees → metres ──────────────────────────
-        deg_to_m = (np.pi * MOON_RADIUS_M) / 180.0
-        px_width_deg = abs(transform.a)   # column pixel size in degrees
-        resolution_m = px_width_deg * deg_to_m
+    lats = [c[0] for c in corner_latlon]
+    lons = [c[1] for c in corner_latlon]
 
     meta = {
-        # raw data
         "image":               image,
         "transform":           transform,
         "crs":                 str(crs),
         "shape":               image.shape,
         "dtype":               str(original_dtype),
 
-        # corner coordinates — same key names as ohrc_loader output
         "corner_latlon":        corner_latlon,
         "upper_left_lat":       corner_latlon[0][0],
         "upper_left_lon":       corner_latlon[0][1],
@@ -130,20 +147,22 @@ def load_geotiff_reference(path: str, source_label: str = "LRO_reference") -> di
         "lower_left_lat":       corner_latlon[3][0],
         "lower_left_lon":       corner_latlon[3][1],
 
-        # resolution — both names for compatibility
         "pixel_resolution_m":  resolution_m,
         "resolution_m_per_px": resolution_m,
 
-        # provenance
         "source_label":        source_label,
+        "is_projected":        is_projected,
+        "pyproj_transformer_to_geographic": transformer,
     }
 
     print(f"[lro_loader] Loaded: {path}")
     print(f"             Shape  : {image.shape}  dtype_original={original_dtype}")
     print(f"             CRS    : {crs}")
-    print(f"             Bounds : lat [{bounds.bottom:.4f}, {bounds.top:.4f}]  "
-          f"lon [{bounds.left:.4f}, {bounds.right:.4f}]")
-    print(f"             GSD    : {resolution_m:.2f} m/px")
+    print(f"             Projected: {is_projected}")
+    print(f"             Corner lat/lon (UL, UR, LR, LL): {corner_latlon}")
+    print(f"             Geographic bbox: lat [{min(lats):.4f}, {max(lats):.4f}]  "
+          f"lon [{min(lons):.4f}, {max(lons):.4f}]")
+    print(f"             GSD    : {resolution_m:.3f} m/px")
 
     return meta
 
@@ -159,6 +178,7 @@ LRO / External Reference Metadata
 ═══════════════════════════════════════
 Source Label      : {meta.get('source_label', 'N/A')}
 CRS               : {meta.get('crs', 'N/A')}
+Projected CRS     : {meta.get('is_projected', False)}
 Image Shape       : {meta.get('shape', 'N/A')}
 Original Dtype    : {meta.get('dtype', 'N/A')}
 

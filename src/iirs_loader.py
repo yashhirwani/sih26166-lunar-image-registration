@@ -5,105 +5,142 @@ Loads and processes Chandrayaan-2 IIRS (Imaging Infrared Spectrometer) data.
 
 IIRS overview:
 - Hyperspectral sensor: each pixel has reflectance values across ~256 narrow
-  spectral bands covering ~0.8–5.0 µm (VNIR + SWIR range)
-- Spatial resolution: ~80 m/px (coarser than OHRC at 0.25 m/px)
+  spectral bands covering ~0.71–5.0 µm (VNIR + SWIR range)
+- Spatial resolution: ~80 m/px (coarser than OHRC at 0.25 m/px) — GSD lives
+  in the companion _d_obs_ product, not in the reflectance .hdr
 - Cannot be fed to SIFT/AKAZE directly — must first be synthesized into a
   single-channel image comparable to a panchromatic sensor
 
-Implementation status
-─────────────────────
-✅ IMPLEMENTED (no dependency on real file format):
-    synthesize_panchromatic()     — band-averaged pan synthesis, fully functional
-    format_iirs_metadata_display() — metadata card for UI
-    make_false_color_composite()  — RGB preview from 3 selected bands
-
-⏳ STUBBED (waiting for real label file to fill in):
-    parse_iirs_label()   — raises NotImplementedError
-    load_iirs_cube()     — raises NotImplementedError
-
-    These two will be completed once the downloaded IIRS label file contents
-    are shared so exact XML/PDS3 field names can be confirmed.
-
-Wavelength convention note:
-    IIRS wavelengths are typically in micrometers (0.8–5.0 µm). This module
-    normalises them to nanometers internally so all band_range_nm parameters
-    are consistent with the function signatures. The conversion is applied
-    inside parse_iirs_label() — synthesize_panchromatic() always receives nm.
+Real product format (confirmed from ch2_iir_*_d_rfl_d18_srd):
+- Geometry and wavelengths come from a plain-text ENVI .hdr (not XML/PDS4)
+- Cube is a headerless .qub (raw binary, ENVI Standard)
+- Geolocation (corner lat/lon) is in a separate _d_loc_ product — left as
+  None here and not guessed
 """
 
+import re
 import numpy as np
-import xml.etree.ElementTree as ET
 
 
-# ── Stubbed functions (fill in once real label file is available) ─────────────
+# ENVI data type codes: 1=byte, 2=int16, 3=int32, 4=float32, 5=float64, 12=uint16
+_ENVI_TYPE_MAP = {
+    1: "uint8",
+    2: "int16",
+    3: "int32",
+    4: "float32",
+    5: "float64",
+    12: "uint16",
+}
 
-def parse_iirs_label(label_path: str) -> dict:
+
+def parse_iirs_label(hdr_path: str) -> dict:
     """
-    ⏳ STUBBED — implement once real IIRS label file is available.
+    Parses an ENVI-format .hdr text file (not XML/PDS4) for IIRS cube geometry.
 
-    Parses the IIRS .xml/.lbl label file for cube geometry and band info.
-    Adapt tag names to match the actual label structure — do NOT guess field
-    names blindly. Inspect the downloaded label file and adjust accordingly.
-
-    If the file is PDS4-style XML, use xml.etree.ElementTree (already imported).
-    If the file is a classic PDS3 .LBL key=value file, use the pvl library:
-        import pvl; label = pvl.load(label_path)
-
-    Wavelength unit check: IIRS wavelengths are often in micrometers (µm).
-    Before returning, convert to nanometers if needed:
-        if max(wavelengths) < 10:   # still in µm
-            wavelengths_nm = [w * 1000 for w in wavelengths]
-    Then print the actual range found so the caller can sanity-check:
-        print(f"[iirs_loader] Wavelength range: {wavelengths_nm[0]:.1f}–{wavelengths_nm[-1]:.1f} nm")
-
-    Returns dict with keys:
-        num_bands          : int
-        num_rows           : int
-        num_cols           : int
-        wavelengths_nm     : list[float]  — center wavelength per band, in nm
-        data_type          : str          — numpy dtype string e.g. "uint16"
-        interleave         : str          — "BSQ" | "BIL" | "BIP"
-        corner_latlon      : list         — [(lat,lon)×4] if in label, else []
-        upper_left_lat/lon : float        — extracted from corner_latlon
-        upper_right_lat/lon: float
-        lower_left_lat/lon : float
-        lower_right_lat/lon: float
-        resolution_m_per_px: float        — from label; ~80 m/px expected
-        pixel_resolution_m : float        — alias of resolution_m_per_px
-        source_label       : str          — "IIRS"
+    This reflectance product's header does not include geolocation or GSD;
+    those live in companion _d_loc_ / _d_obs_ products. corner_latlon and
+    resolution_m_per_px are returned as None and must not be guessed.
     """
-    raise NotImplementedError(
-        "parse_iirs_label() is not yet implemented. "
-        "Share the contents of the downloaded IIRS .xml or .lbl label file "
-        "so the correct field names can be confirmed before coding this function."
+    with open(hdr_path, "r") as f:
+        content = f.read()
+
+    def extract_scalar(key, cast=int):
+        match = re.search(rf"{key}\s*=\s*(\S+)", content)
+        if not match:
+            raise ValueError(f"Could not find '{key}' in header file {hdr_path}")
+        return cast(match.group(1))
+
+    def extract_wavelength_list(text):
+        match = re.search(r"wavelength\s*=\s*\{([^}]+)\}", text, re.DOTALL)
+        if not match:
+            raise ValueError(f"Could not find wavelength list in header file {hdr_path}")
+        return [float(v.strip()) for v in match.group(1).split(",") if v.strip()]
+
+    num_cols = extract_scalar("samples", int)
+    num_rows = extract_scalar("lines", int)
+    num_bands = extract_scalar("bands", int)
+    envi_data_type = extract_scalar("data type", int)
+    interleave_match = re.search(r"interleave\s*=\s*(\w+)", content)
+    if not interleave_match:
+        raise ValueError(f"Could not find 'interleave' in header file {hdr_path}")
+    interleave = interleave_match.group(1).lower()
+    byte_order = extract_scalar("byte order", int)
+    wavelengths_nm = extract_wavelength_list(content)
+
+    if envi_data_type not in _ENVI_TYPE_MAP:
+        raise ValueError(
+            f"Unhandled ENVI data type code {envi_data_type} — "
+            f"extend _ENVI_TYPE_MAP if needed"
+        )
+    numpy_dtype = _ENVI_TYPE_MAP[envi_data_type]
+
+    if len(wavelengths_nm) != num_bands:
+        raise ValueError(
+            f"Wavelength count ({len(wavelengths_nm)}) doesn't match band count "
+            f"({num_bands}) — check the .hdr file for a parsing error"
+        )
+
+    print(
+        f"[iirs_loader] Wavelength range: "
+        f"{wavelengths_nm[0]:.1f}–{wavelengths_nm[-1]:.1f} nm "
+        f"({num_bands} bands, {num_rows}×{num_cols}, {interleave} {numpy_dtype})"
     )
 
+    return {
+        "num_bands": num_bands,
+        "num_rows": num_rows,
+        "num_cols": num_cols,
+        "wavelengths_nm": wavelengths_nm,
+        "data_type": numpy_dtype,
+        "interleave": interleave,
+        "byte_order": "little" if byte_order == 0 else "big",
+        "corner_latlon": None,  # not in this .hdr — would come from _d_loc_
+        "resolution_m_per_px": None,  # not in this .hdr — would come from _d_obs_
+        "source_label": "IIRS",
+    }
 
-def load_iirs_cube(data_path: str, meta: dict) -> np.ndarray:
+
+def load_iirs_cube(qub_path: str, meta: dict) -> np.ndarray:
     """
-    ⏳ STUBBED — implement once real IIRS label file is available.
+    Loads the raw IIRS hyperspectral cube from a .qub file (raw binary,
+    same format as ENVI's .img/.bin — no header inside the .qub itself,
+    all geometry comes from the parsed .hdr in meta).
 
-    Loads the raw IIRS hyperspectral cube (.qub or .img) using the shape,
-    dtype, and interleave information from parse_iirs_label().
-
-    Returns np.ndarray shaped (num_bands, num_rows, num_cols) — BSQ-equivalent
-    band-first layout regardless of the file's native interleave.
-
-    Interleave reshaping guide (fill in the correct one once known):
-        BSQ (band sequential):
-            raw.reshape(num_bands, num_rows, num_cols)           # already band-first
-        BIL (band interleaved by line):
-            raw.reshape(num_rows, num_bands, num_cols)
-            .transpose(1, 0, 2)                                  # → (bands, rows, cols)
-        BIP (band interleaved by pixel):
-            raw.reshape(num_rows, num_cols, num_bands)
-            .transpose(2, 0, 1)                                  # → (bands, rows, cols)
+    Returns array shaped (bands, rows, cols) — i.e. (256, num_rows, num_cols) —
+    regardless of the file's native interleave, for consistency with the
+    rest of this module.
     """
-    raise NotImplementedError(
-        "load_iirs_cube() is not yet implemented. "
-        "This will be filled in once parse_iirs_label() is complete and "
-        "the interleave format is confirmed from the real label file."
-    )
+    dtype = np.dtype(meta["data_type"])
+    if meta["byte_order"] == "little":
+        dtype = dtype.newbyteorder("<")
+    else:
+        dtype = dtype.newbyteorder(">")
+
+    raw = np.fromfile(qub_path, dtype=dtype)
+
+    expected_size = meta["num_bands"] * meta["num_rows"] * meta["num_cols"]
+    if raw.size != expected_size:
+        raise ValueError(
+            f"File size mismatch: got {raw.size} values, expected {expected_size} "
+            f"({meta['num_bands']} bands x {meta['num_rows']} rows x "
+            f"{meta['num_cols']} cols). "
+            f"Check the .hdr dimensions match the actual .qub file size."
+        )
+
+    if meta["interleave"] == "bsq":
+        cube = raw.reshape((meta["num_bands"], meta["num_rows"], meta["num_cols"]))
+    elif meta["interleave"] == "bil":
+        cube = raw.reshape(
+            (meta["num_rows"], meta["num_bands"], meta["num_cols"])
+        ).transpose(1, 0, 2)
+    elif meta["interleave"] == "bip":
+        cube = raw.reshape(
+            (meta["num_rows"], meta["num_cols"], meta["num_bands"])
+        ).transpose(2, 0, 1)
+    else:
+        raise ValueError(f"Unknown interleave format: {meta['interleave']}")
+
+    return cube
 
 
 # ── Fully implemented functions ───────────────────────────────────────────────
@@ -111,7 +148,7 @@ def load_iirs_cube(data_path: str, meta: dict) -> np.ndarray:
 def synthesize_panchromatic(
     cube: np.ndarray,
     wavelengths_nm: list,
-    band_range_nm: tuple = (800, 1000),
+    band_range_nm: tuple = (712, 950),
 ) -> np.ndarray:
     """
     Synthesizes a single-channel panchromatic-equivalent image from the
@@ -125,10 +162,10 @@ def synthesize_panchromatic(
     which is not publicly available. Equal weighting is an acceptable and
     clearly-labelled approximation for this timeline.
 
-    IIRS wavelength coverage (~0.8–5.0 µm = 800–5000 nm):
-    The default band_range_nm=(800, 1000) targets the VNIR boundary where IIRS
-    has its shortest wavelengths — the closest analogue to a panchromatic band
-    given that IIRS does not cover the visible range (< 800 nm).
+    IIRS wavelength coverage for this product (~0.71–5.0 µm = 712–5009 nm):
+    The default band_range_nm=(712, 950) uses the shortest-wavelength
+    (most visible-light-like) bands actually present. The shortest center
+    wavelength in the real reflectance .hdr is 712.3 nm, not 800 nm.
     If you need to adjust this, call:
         synthesize_panchromatic(cube, wavelengths_nm, band_range_nm=(900, 2500))
     The function will print the bands selected so you can sanity-check.
@@ -189,10 +226,13 @@ def synthesize_panchromatic(
         f"mean={pan.mean():.3f}  shape={pan.shape}"
     )
 
-    # ── Normalise to uint8 ─────────────────────────────────────────
-    pan_min, pan_max = pan.min(), pan.max()
-    pan_norm = (
-        (pan - pan_min) / (pan_max - pan_min + 1e-8) * 255
+    # ── Normalise to uint8 (percentile stretch) ────────────────────
+    # Min-max stretch is crushed by a few saturated outliers (this product
+    # has max ≫ mean). A 2–98 percentile stretch matches the false-color
+    # preview and yields a viewable grayscale image.
+    p2, p98 = np.percentile(pan, 2), np.percentile(pan, 98)
+    pan_norm = np.clip(
+        (pan - p2) / (p98 - p2 + 1e-8) * 255, 0, 255
     ).astype(np.uint8)
 
     return pan_norm
@@ -247,7 +287,7 @@ def format_iirs_metadata_display(meta: dict) -> str:
     num_bands   = meta.get('num_bands', '?')
     num_rows    = meta.get('num_rows', '?')
     num_cols    = meta.get('num_cols', '?')
-    res         = meta.get('resolution_m_per_px', meta.get('pixel_resolution_m', 0))
+    res         = meta.get('resolution_m_per_px', meta.get('pixel_resolution_m'))
     wls         = meta.get('wavelengths_nm', [])
     interleave  = meta.get('interleave', '?')
     data_type   = meta.get('data_type', '?')
@@ -257,17 +297,26 @@ def format_iirs_metadata_display(meta: dict) -> str:
     else:
         wl_range = "unknown (label not yet parsed)"
 
-    ul_lat = meta.get('upper_left_lat', '?')
-    ul_lon = meta.get('upper_left_lon', '?')
-    lr_lat = meta.get('lower_right_lat', '?')
-    lr_lon = meta.get('lower_right_lon', '?')
+    if res is None:
+        res_str = "not in this .hdr (see _d_obs_ product)"
+    else:
+        res_str = f"{res:.1f} m/pixel"
+
+    corners = meta.get('corner_latlon')
+    if corners:
+        ul_lat, ul_lon = corners[0]
+        lr_lat, lr_lon = corners[2]
+        ul_str = f"{ul_lat}, {ul_lon}"
+        lr_str = f"{lr_lat}, {lr_lon}"
+    else:
+        ul_str = lr_str = "not in this .hdr (see _d_loc_ product)"
 
     return f"""
 IIRS Hyperspectral Cube
 ═══════════════════════════════════════
 Sensor            : Chandrayaan-2 IIRS
 Spatial Size      : {num_rows} rows × {num_cols} cols
-Resolution        : {res:.1f} m/pixel
+Resolution        : {res_str}
 Bands             : {num_bands}
 Wavelength range  : {wl_range}
 Interleave        : {interleave}
@@ -275,8 +324,8 @@ Data type         : {data_type}
 
 Corner Coordinates (Lunar Lat/Lon)
 ─────────────────────────────────────
-Upper Left        : {ul_lat}, {ul_lon}
-Lower Right       : {lr_lat}, {lr_lon}
+Upper Left        : {ul_str}
+Lower Right       : {lr_str}
 ═══════════════════════════════════════
 ⚠️  Panchromatic synthesis is an equal-weighted band average,
     not a precise radiometric match to OHRC / LRO NAC response.

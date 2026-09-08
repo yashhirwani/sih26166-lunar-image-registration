@@ -258,11 +258,38 @@ def crop_reference_to_overlap(reference_meta: dict, source_meta: dict,
     min_lon = max(min_lon, ref_bbox['min_lon'])
     max_lon = min(max_lon, ref_bbox['max_lon'])
 
-    # Convert lat/lon to pixel row/col using the affine transform
-    # rasterio Affine inverse (~transform) maps (lon, lat) → (col, row)
+    # Convert the lat/lon crop box to pixel row/col.
+    # Geographic CRS: affine maps (lon, lat) → (col, row) directly.
+    # Projected CRS: convert the box corners into native metres first,
+    # then apply the affine — never reproject/resample the raster.
     transform = reference_meta['transform']
-    col_start_f, row_start_f = ~transform * (min_lon, max_lat)
-    col_end_f,   row_end_f   = ~transform * (max_lon, min_lat)
+    if reference_meta.get('is_projected'):
+        import pyproj
+        to_geo = reference_meta.get('pyproj_transformer_to_geographic')
+        if to_geo is None:
+            raise ValueError(
+                "Projected reference is missing pyproj_transformer_to_geographic. "
+                "Reload it with lro_loader.load_geotiff_reference()."
+            )
+        inverse = pyproj.Transformer.from_crs(
+            to_geo.target_crs, to_geo.source_crs, always_xy=True
+        )
+        geo_corners = [
+            (min_lon, max_lat),
+            (max_lon, max_lat),
+            (max_lon, min_lat),
+            (min_lon, min_lat),
+        ]
+        xs, ys = [], []
+        for lon, lat in geo_corners:
+            x, y = inverse.transform(lon, lat)
+            xs.append(x)
+            ys.append(y)
+        col_start_f, row_start_f = ~transform * (min(xs), max(ys))
+        col_end_f,   row_end_f   = ~transform * (max(xs), min(ys))
+    else:
+        col_start_f, row_start_f = ~transform * (min_lon, max_lat)
+        col_end_f,   row_end_f   = ~transform * (max_lon, min_lat)
 
     row_start, row_end = sorted([int(row_start_f), int(row_end_f)])
     col_start, col_end = sorted([int(col_start_f), int(col_end_f)])
@@ -282,21 +309,36 @@ def crop_reference_to_overlap(reference_meta: dict, source_meta: dict,
             "Check CRS and corner coordinates in both metadata dicts."
         )
 
+    h, w = reference_meta['image'].shape[:2]
+    crop_h, crop_w = row_end - row_start, col_end - col_start
+    n_pix = crop_h * crop_w
+    orig_pix = h * w
+    print(f"[overlap] crop_reference_to_overlap:")
+    print(f"          Original reference shape : {(h, w)}")
+    print(f"          Pixel window             : rows {row_start}:{row_end}, "
+          f"cols {col_start}:{col_end}")
+    print(f"          Pending crop shape       : {(crop_h, crop_w)}  ({n_pix:,} px)")
+    print(f"          Crop lat [{min_lat:.4f}, {max_lat:.4f}]  "
+          f"lon [{min_lon:.4f}, {max_lon:.4f}]")
+    print(f"          Reference CRS mode       : "
+          f"{'projected' if reference_meta.get('is_projected') else 'geographic'}")
+
+    if orig_pix > 0 and n_pix > 0.70 * orig_pix:
+        raise ValueError(
+            f"Crop window is unexpectedly large ({crop_h}x{crop_w}, {n_pix:,} px) "
+            f"— {n_pix / orig_pix:.0%} of the full reference {(h, w)}. "
+            f"Bounding-box intersection math is likely wrong for this CRS. "
+            f"Not proceeding with this crop."
+        )
+
     cropped = reference_meta['image'][row_start:row_end, col_start:col_end]
 
-    # Updated corner coordinates of the crop
     updated_corners = [
         (max_lat, min_lon),  # UL
         (max_lat, max_lon),  # UR
         (min_lat, max_lon),  # LR
         (min_lat, min_lon),  # LL
     ]
-
-    print(f"[overlap] crop_reference_to_overlap:")
-    print(f"          Original reference shape : {reference_meta['image'].shape}")
-    print(f"          Cropped shape            : {cropped.shape}")
-    print(f"          Crop lat [{min_lat:.4f}, {max_lat:.4f}]  "
-          f"lon [{min_lon:.4f}, {max_lon:.4f}]")
 
     return cropped, updated_corners
 
