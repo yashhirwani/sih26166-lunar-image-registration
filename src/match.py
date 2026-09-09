@@ -91,14 +91,23 @@ def detect_and_match_akaze(img1, img2, ratio_threshold=None):
     if ratio_threshold is None:
         ratio_threshold = get_config()['matching']['ratio_threshold']
         
-    # Try different AKAZE APIs depending on opencv-contrib version
-    try:
-        akaze = cv2.AKAZE.create()
-    except AttributeError:
+    # AKAZE's binding location has moved across OpenCV releases:
+    # cv2.AKAZE_create() (4.x main module), cv2.AKAZE.create() (some 4.x
+    # builds), cv2.xfeatures2d.AKAZE_create() (5.x, where it moved under
+    # xfeatures2d). Try all three rather than assuming one.
+    akaze = None
+    for attempt in (
+        lambda: cv2.AKAZE_create(),
+        lambda: cv2.AKAZE.create(),
+        lambda: cv2.xfeatures2d.AKAZE_create(),
+    ):
         try:
-            akaze = cv2.AKAZE_create()
+            akaze = attempt()
+            break
         except AttributeError:
-            raise ValueError("AKAZE not available in this OpenCV build")
+            continue
+    if akaze is None:
+        raise ValueError("AKAZE not available in this OpenCV build")
 
     kp1, des1 = akaze.detectAndCompute(img1, None)
     kp2, des2 = akaze.detectAndCompute(img2, None)

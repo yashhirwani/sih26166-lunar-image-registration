@@ -1,4 +1,3 @@
-opencv-python
 opencv-contrib-python
 numpy
 scipy
@@ -13,3 +12,4 @@ pytest
 rasterio
 pyproj
 phasepack
+reportlab
