@@ -1,0 +1,18 @@
+
+==============================================
+        REGISTRATION METRICS REPORT
+==============================================
+  Algorithm          : SIFT
+  Transform          : homography
+  RMSE (fit points)  : 0.0194 px
+  RMSE-X / RMSE-Y    : 0.0176 / 0.0083 px
+  RMSE (held-out)    : 0.0195 px (n=79 unseen)
+  Sub-pixel achieved  : YES (held-out verified)  (held-out RMSE 0.0195px on 79 unseen inliers)
+  Inlier Count        : 317
+  Total Matches       : 317
+  Inlier Ratio        : 1.0000
+  Spatial Score       : 0.9991
+  Spatial Coverage    : 64/64 cells (100.0%), spread 95%x99% of image, max cell 2% of inliers
+  Confidence          : HIGH
+  Degenerate Fit      : No
+==============================================

@@ -1,0 +1,19 @@
+{
+  "label": "Easy: OHRC vs OHRC, same acquisition",
+  "overlap_confirmed": true,
+  "notes": "Two browse-render variants of the SAME OHRC acquisition (near-identical illumination/geometry). This is the only pair in the repo with a CONFIRMED genuine ground overlap. See data/test_set/README.md.",
+  "success": true,
+  "method": "SIFT",
+  "confidence": "high",
+  "degenerate_fit": false,
+  "transform_type": "homography",
+  "outlier_method": "MAGSAC++ (USAC_MAGSAC)",
+  "rmse_fit_px": 0.019421890377998352,
+  "rmse_held_out_px": 0.019465316087007523,
+  "held_out_available": true,
+  "inlier_count": 317,
+  "inlier_ratio": 1.0,
+  "spatial_score": 0.9991251959330562,
+  "coverage_fraction": 1.0,
+  "processing_time_s": 35.6037871837616
+}
