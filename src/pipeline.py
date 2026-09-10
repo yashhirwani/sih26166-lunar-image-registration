@@ -709,12 +709,23 @@ def register_iirs(
     ref_meta_with_image = dict(reference_meta)
     ref_meta_with_image['image'] = reference_image
 
-    try:
-        cropped_ref, _ = crop_reference_to_overlap(
-            ref_meta_with_image, iirs_meta, margin_fraction=0.15
-        )
-    except ValueError as e:
-        return _make_failure_result(str(e))
+    # IIRS .hdr does not contain corner coordinates — skip overlap crop
+    # and use the full reference image directly
+    iirs_has_coords = (
+        iirs_meta.get('upper_left_lat') is not None and
+        iirs_meta.get('upper_left_lat', 0) != 0.0
+    )
+
+    if iirs_has_coords:
+        try:
+            cropped_ref, _ = crop_reference_to_overlap(
+                ref_meta_with_image, iirs_meta, margin_fraction=0.15
+            )
+        except ValueError as e:
+            return _make_failure_result(str(e))
+    else:
+        print("[I-2] IIRS has no corner coordinates — using full reference image")
+        cropped_ref = reference_image
 
     print(f"[I-2] Reference crop: {original_ref_shape} → {cropped_ref.shape}")
 
