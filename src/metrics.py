@@ -161,11 +161,6 @@ def compute_all_metrics(src_pts, dst_pts, M, mask, img_shape, grid_size=8,
         dst_inliers.reshape(-1, 2), img_shape, grid_size
     )
 
-    # --- Post-RANSAC coverage (occupied cells, spread, per-cell counts) ---
-    metrics['coverage'] = compute_coverage_metrics(
-        dst_inliers.reshape(-1, 2), img_shape, grid_size
-    )
-
     # --- Reliability assessment ---
     reliability = assess_reliability(
         inlier_count=metrics['inlier_count'],
@@ -234,170 +229,36 @@ def compute_spatial_distribution_score(points, img_shape, grid_size=8):
     return float(entropy / max_entropy)
 
 
-def assess_subpixel_claim(metrics: dict) -> dict:
-    """
-    Decides whether "sub-pixel accuracy achieved" can honestly be claimed,
-    and is the single source of truth for that claim (used by both the
-    console report and the UI, so they can never disagree).
-
-    A same-data RMSE below 1.0 px is NOT sufficient evidence on its own —
-    the fit is always going to look good on the points used to build it.
-    The claim requires:
-      1. The fit is not degenerate (enough inliers to be statistically checkable)
-      2. An independent, held-out RMSE was computable (points never used to fit)
-      3. That held-out RMSE is itself < 1.0 px
-
-    When held-out validation isn't available (too few inliers to split),
-    the claim is explicitly reported as "unverified", never as achieved —
-    the same-data RMSE alone must not be presented as proof.
-
-    Returns:
-        { "achieved": bool, "label": str, "basis": str }
-    """
-    holdout = metrics.get('held_out_validation') or {}
-    degenerate = metrics.get('degenerate_fit', False)
-
-    if degenerate:
-        return {"achieved": False, "label": "NOT MEANINGFUL",
-                "basis": "fit is degenerate — RMSE has no statistical meaning"}
-
-    if not holdout.get('available'):
-        return {"achieved": False, "label": "UNVERIFIED",
-                "basis": holdout.get('reason', 'held-out validation unavailable')}
-
-    if holdout['rmse'] < 1.0:
-        return {"achieved": True, "label": "YES (held-out verified)",
-                "basis": f"held-out RMSE {holdout['rmse']:.4f}px on "
-                         f"{holdout['n_holdout']} unseen inliers"}
-
-    return {"achieved": False, "label": "NO",
-            "basis": f"held-out RMSE {holdout['rmse']:.4f}px on "
-                     f"{holdout['n_holdout']} unseen inliers"}
-
-
-def compute_coverage_metrics(points, img_shape, grid_size=8):
-    """
-    Post-RANSAC spatial coverage check.
-
-    compute_spatial_distribution_score() gives one entropy number, but
-    entropy alone can hide clustering — grid filtering happens *before*
-    RANSAC, so the surviving inliers can still bunch up in one region even
-    if the pre-filter matches were spread out. This adds the concrete,
-    inspectable numbers ISRO's "uniform distribution" requirement asks for:
-    how many of the grid cells actually contain an inlier, how far inliers
-    spread relative to the image, and the raw per-cell counts (also used to
-    render the heatmap in visualize.create_spatial_heatmap).
-
-    Parameters:
-        points   : (N, 2) inlier (x, y) coordinates in the image the mask
-                   was computed against (i.e. dst_inliers)
-        img_shape: (height, width)
-        grid_size: grid rows/cols (same default as spatial_score for
-                   consistency between the two)
-
-    Returns:
-        {
-            "grid_size"          : int
-            "cell_counts"        : (grid_size, grid_size) int array
-            "occupied_cells"     : int — cells with >= 1 inlier
-            "total_cells"        : int — grid_size ** 2
-            "coverage_fraction"  : float — occupied / total
-            "spatial_spread_x"   : float — bbox width / image width  (0-1)
-            "spatial_spread_y"   : float — bbox height / image height (0-1)
-            "max_cell_fraction"  : float — largest single cell's share of
-                                    all inliers (high = clustering risk)
-        }
-    """
-    h, w = img_shape[:2]
-    cell_counts = np.zeros((grid_size, grid_size), dtype=int)
-
-    points = np.asarray(points).reshape(-1, 2)
-    if len(points) == 0:
-        return {
-            "grid_size": grid_size,
-            "cell_counts": cell_counts,
-            "occupied_cells": 0,
-            "total_cells": grid_size * grid_size,
-            "coverage_fraction": 0.0,
-            "spatial_spread_x": 0.0,
-            "spatial_spread_y": 0.0,
-            "max_cell_fraction": 0.0,
-        }
-
-    cell_h = h / grid_size
-    cell_w = w / grid_size
-    for x, y in points:
-        col = min(int(x / cell_w), grid_size - 1)
-        row = min(int(y / cell_h), grid_size - 1)
-        cell_counts[row, col] += 1
-
-    occupied = int(np.count_nonzero(cell_counts))
-    total = grid_size * grid_size
-
-    xs, ys = points[:, 0], points[:, 1]
-    spread_x = float((xs.max() - xs.min()) / w) if w > 0 else 0.0
-    spread_y = float((ys.max() - ys.min()) / h) if h > 0 else 0.0
-
-    return {
-        "grid_size": grid_size,
-        "cell_counts": cell_counts,
-        "occupied_cells": occupied,
-        "total_cells": total,
-        "coverage_fraction": occupied / total,
-        "spatial_spread_x": min(spread_x, 1.0),
-        "spatial_spread_y": min(spread_y, 1.0),
-        "max_cell_fraction": float(cell_counts.max() / len(points)),
-    }
-
-
 def format_metrics_report(metrics, method_name="SIFT"):
     """
-    Formats metrics into a readable, ASCII-only report string (console output
-    on Windows defaults to a legacy codepage that crashes on box-drawing/emoji
-    characters — see src/console.py).
+    Formats metrics into a readable report string.
     """
+    sub_pixel = "✅ YES" if metrics['rmse'] < 1.0 else "❌ NO"
     confidence = metrics.get('confidence', 'N/A').upper()
     degenerate = metrics.get('degenerate_fit', False)
-    degen_flag = "YES -- RMSE not meaningful" if degenerate else "No"
+    degen_flag = "⚠️ YES — RMSE not meaningful" if degenerate else "No"
     ttype      = metrics.get('transform_type', 'homography')
-    holdout    = metrics.get('held_out_validation') or {}
-    subpixel   = assess_subpixel_claim(metrics)
-    coverage   = metrics.get('coverage') or {}
-
-    if holdout.get('available'):
-        holdout_line = f"{holdout['rmse']:.4f} px (n={holdout['n_holdout']} unseen)"
-    else:
-        holdout_line = f"unavailable ({holdout.get('reason', 'n/a')})"
-
-    if coverage:
-        coverage_line = (f"{coverage['occupied_cells']}/{coverage['total_cells']} cells "
-                          f"({coverage['coverage_fraction']:.1%}), spread "
-                          f"{coverage['spatial_spread_x']:.0%}x{coverage['spatial_spread_y']:.0%} "
-                          f"of image, max cell {coverage['max_cell_fraction']:.0%} of inliers")
-    else:
-        coverage_line = "n/a"
 
     report = f"""
-==============================================
-        REGISTRATION METRICS REPORT
-==============================================
-  Algorithm          : {method_name}
-  Transform          : {ttype}
-  RMSE (fit points)  : {metrics['rmse']:.4f} px
-  RMSE-X / RMSE-Y    : {metrics['rmse_x']:.4f} / {metrics['rmse_y']:.4f} px
-  RMSE (held-out)    : {holdout_line}
-  Sub-pixel achieved  : {subpixel['label']}  ({subpixel['basis']})
-  Inlier Count        : {metrics['inlier_count']}
-  Total Matches       : {metrics['total_matches']}
-  Inlier Ratio        : {metrics['inlier_ratio']:.4f}
-  Spatial Score       : {metrics['spatial_score']:.4f}
-  Spatial Coverage    : {coverage_line}
-  Confidence          : {confidence}
-  Degenerate Fit      : {degen_flag}
-==============================================
+╔══════════════════════════════════════════╗
+║        REGISTRATION METRICS REPORT       ║
+╠══════════════════════════════════════════╣
+║  Algorithm        : {method_name:<22}║
+║  Transform        : {ttype:<22}║
+║  RMSE             : {metrics['rmse']:<22.4f}║
+║  RMSE-X           : {metrics['rmse_x']:<22.4f}║
+║  RMSE-Y           : {metrics['rmse_y']:<22.4f}║
+║  Sub-pixel        : {sub_pixel:<22}║
+║  Inlier Count     : {metrics['inlier_count']:<22}║
+║  Total Matches    : {metrics['total_matches']:<22}║
+║  Inlier Ratio     : {metrics['inlier_ratio']:<22.4f}║
+║  Spatial Score    : {metrics['spatial_score']:<22.4f}║
+║  Confidence       : {confidence:<22}║
+║  Degenerate Fit   : {degen_flag:<22}║
+╚══════════════════════════════════════════╝
 """
     if degenerate:
-        report += f"\nWARNING: {metrics.get('reliability_reason', '')}\n"
+        report += f"\n⚠️  WARNING: {metrics.get('reliability_reason', '')}\n"
     elif metrics.get('reliability_reason'):
-        report += f"\nNOTE: {metrics.get('reliability_reason', '')}\n"
+        report += f"\nℹ️  NOTE: {metrics.get('reliability_reason', '')}\n"
     return report

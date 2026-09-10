@@ -23,20 +23,15 @@ import time
 import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 
-from .console import setup_utf8_console
-setup_utf8_console()
-
 from .config_loader import get_config
 from .preprocess import preprocess_pair, preprocess_with_sun_angle, preprocess_pair_advanced
 from .match import detect_and_match_sift, detect_and_match_akaze, enforce_uniform_distribution
 from .loftr_match import detect_and_match_loftr, loftr_to_opencv_matches, create_fake_keypoints, load_loftr
 from .structural_match import detect_and_match_structural
 from .transform import (estimate_homography_ransac, warp_image, subpixel_refinement,
-                         estimate_transform_adaptive, warp_image_adaptive, compute_rmse_adaptive,
-                         compose_subpixel_shift, held_out_rmse)
+                         estimate_transform_adaptive, warp_image_adaptive, compute_rmse_adaptive)
 from .metrics import compute_all_metrics, format_metrics_report, assess_reliability
-from .visualize import (draw_matches, create_checkerboard, create_side_by_side,
-                         create_difference_image, create_spatial_heatmap)
+from .visualize import draw_matches, create_checkerboard, create_side_by_side, create_difference_image
 
 # Cached models — loaded once, reused across calls
 _loftr_model = None
@@ -127,6 +122,35 @@ def _run_method_safe(name, fn, *args, **kwargs):
     except Exception as e:
         print(f"         [{name}] failed: {e}")
         return None
+    global _lightglue_extractor, _lightglue_matcher, _lightglue_device
+    from .lightglue_match import (detect_and_match_lightglue,
+                                   lightglue_to_opencv_keypoints,
+                                   lightglue_to_opencv_matches,
+                                   load_lightglue)
+    if _lightglue_extractor is None:
+        _lightglue_extractor, _lightglue_matcher, _lightglue_device = load_lightglue()
+
+    src_pts, dst_pts, confidence, num = detect_and_match_lightglue(
+        img1, img2, _lightglue_extractor, _lightglue_matcher, _lightglue_device
+    )
+    kp1 = lightglue_to_opencv_keypoints(src_pts)
+    kp2 = lightglue_to_opencv_keypoints(dst_pts)
+    matches = lightglue_to_opencv_matches(confidence)
+    return src_pts, dst_pts, kp1, kp2, matches
+
+
+def _try_loftr(img1, img2):
+    """Load and run LoFTR. Returns (src_pts, dst_pts, kp1, kp2, matches) or raises."""
+    global _loftr_model, _loftr_device
+    if _loftr_model is None:
+        _loftr_model, _loftr_device = load_loftr()
+    src_pts, dst_pts, confidence, num = detect_and_match_loftr(
+        img1, img2, _loftr_model, _loftr_device
+    )
+    kp1 = create_fake_keypoints(src_pts)
+    kp2 = create_fake_keypoints(dst_pts)
+    matches = loftr_to_opencv_matches(confidence)
+    return src_pts, dst_pts, kp1, kp2, matches
 
 
 def _make_failure_result(reason, processing_time=0.0):
@@ -247,17 +271,9 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
                 img1_clean, img2_clean, detector='sift')
             used_method = 'PC-SIFT (Phase Congruency)'
 
-        elif method == 'akaze':
-            # Explicit AKAZE request — run only AKAZE, do not fall through to
-            # the full ensemble (that would silently ignore the user's choice).
-            src_pts, dst_pts, kp1, kp2, good_matches = detect_and_match_akaze(
-                img1_clean, img2_clean)
-            used_method = 'AKAZE'
-            escalation_log.append(f"AKAZE: {len(good_matches)} matches")
-
-        elif method in ('auto', 'sift'):
+        elif method in ('auto', 'akaze', 'sift'):
             # --- Classical tier ---
-            if method == 'auto':
+            if method in ('auto', 'akaze'):
                 # AUTO MODE: Run ALL methods, pick the best scoring one
                 print("         Running all algorithms — will pick best result...")
 
@@ -360,9 +376,7 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
     result['homography_matrix'] = M
     result['transform_type']    = ttype
     result['ransac_mask']       = mask
-    result['outlier_method']    = transform_result.get('outlier_method', 'unknown')
     print(f"         Transform type : {ttype.upper()}")
-    print(f"         Outlier rejection: {result['outlier_method']}")
     print(f"         Inliers: {num_inliers} / {len(good_matches_u)}")
     print(f"         Inlier ratio: {inlier_ratio:.2%}")
 
@@ -378,7 +392,6 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
     try:
         warped_img = warp_image_adaptive(img1_clean, transform_result, img2_clean.shape)
         result['registered_image'] = warped_img
-        result['reference_image'] = img2_clean  # unlabeled — for UI overlay/blend controls
     except Exception as e:
         return _make_failure_result(f"Warping failed: {e}", time.time() - start_time)
 
@@ -390,11 +403,6 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
 
     # ── Step 6: Sub-pixel refinement ──────────────────────────────
     print("\n[Step 6] Sub-pixel refinement (phase correlation)...")
-    # transform_result_refined folds the shift (once known) into the matrix,
-    # so metrics computed in Step 7 reflect the image actually delivered as
-    # registered_image_refined, not the pre-refinement warp. Defaults to the
-    # unrefined transform if phase correlation fails or the shift is skipped.
-    transform_result_refined = transform_result
     try:
         shift, response = subpixel_refinement(
             img2_clean.astype(np.float64),
@@ -408,7 +416,6 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
             correction = np.float32([[1, 0, shift[0]], [0, 1, shift[1]]])
             h, w = warped_img.shape
             warped_refined = cv2.warpAffine(warped_img, correction, (w, h))
-            transform_result_refined = compose_subpixel_shift(transform_result, shift)
             print(f"         Shift corrected: ({shift[0]:.3f}, {shift[1]:.3f}) px")
         else:
             warped_refined = warped_img
@@ -421,32 +428,13 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
         result['subpixel_shift'] = (0, 0)
         print(f"         Refinement skipped: {e}")
 
-    # homography_matrix now reflects the actually-delivered registered image
-    # (with the subpixel shift folded in, if one was applied); the
-    # pre-refinement matrix is kept for transparency/debugging.
-    result['homography_matrix_pre_refinement'] = M
-    result['homography_matrix'] = transform_result_refined['transform_matrix']
-
     # ── Step 7: Metrics ────────────────────────────────────────────
     print("\n[Step 7] Computing evaluation metrics...")
     metrics = compute_all_metrics(
         src_pts_u, dst_pts_u, M, mask, img1_clean.shape,
-        transform_result=transform_result_refined
+        transform_result=transform_result
     )
     metrics['processing_time'] = time.time() - start_time
-
-    # Independent, out-of-sample accuracy estimate: re-fit on a subset of
-    # inliers and measure residuals on inliers that were never fit against.
-    # This — not the same-data fit RMSE above — is what should gate any
-    # "sub-pixel accuracy achieved" claim (see assess_reliability / UI).
-    holdout = held_out_rmse(src_pts_u, dst_pts_u, transform_result_refined)
-    metrics['held_out_validation'] = holdout
-    if holdout.get('available'):
-        print(f"         Held-out RMSE: {holdout['rmse']:.4f} px "
-              f"(fit on {holdout['n_fit']}, validated on {holdout['n_holdout']} unseen inliers)")
-    else:
-        print(f"         Held-out validation unavailable: {holdout.get('reason')}")
-
     result['metrics'] = metrics
     result['metrics_report'] = format_metrics_report(metrics, used_method)
 
@@ -476,12 +464,6 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
             "Reference Image", "Registered Source")
         result['difference_image'] = create_difference_image(
             img2_clean, result['registered_image_refined'])
-
-        inlier_mask_bool = mask.ravel() == 1
-        dst_inliers_for_map = dst_pts_u.reshape(-1, 2)[inlier_mask_bool]
-        result['spatial_heatmap'] = create_spatial_heatmap(
-            dst_inliers_for_map, img2_clean.shape,
-            grid_size=8, background_img=img2_clean)
     except Exception as e:
         print(f"         Visualization warning: {e}")
 

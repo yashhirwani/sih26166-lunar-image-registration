@@ -1,7 +1,0 @@
-{
-  "label": "Cross-sensor: OHRC vs LRO GeoTIFF (code-path demo only)",
-  "overlap_confirmed": false,
-  "notes": "NOT a geographically verified pair. The bundled OHRC browse PNG has no accompanying XML, so its true lunar location is unknown to this pipeline - it cannot be matched against the LRO tile's known footprint. This case exists only to demonstrate that register_cross_source() runs end-to-end (GSD normalisation, crop, delegation to run_pipeline) and reports its confidence honestly rather than crashing. Cross-sensor matching remains EXPERIMENTAL and unvalidated on confirmed data - see README Known Limitations.",
-  "success": false,
-  "failure_reason": "Source and reference footprints do not overlap. Source  bbox: lat [0.0000, 0.0000] lon [0.0000, 0.0000]. Reference bbox: lat [-84.1649, -71.2304] lon [-15.9641, 89.9410]. Check that you exported the LRO tile over the correct OHRC region."
-}
