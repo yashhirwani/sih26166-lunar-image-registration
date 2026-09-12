@@ -221,3 +221,52 @@ def numpy_to_bytes(img):
     """
     _, buffer = cv2.imencode('.png', img)
     return buffer.tobytes()
+
+
+def create_composite(reference_img, registered_img):
+    """
+    Places the registered source image ON TOP of the reference image.
+    Where the registered image has data (non-black pixels), it shows
+    the registered source. Where it is black (no data), it shows the
+    reference image.
+
+    This produces a single mosaic image:
+    - Surrounding area = reference image (LRO NAC terrain)
+    - Strip area = registered OHRC source
+    """
+    # Make both same size
+    h_r, w_r = reference_img.shape[:2]
+    h_s, w_s = registered_img.shape[:2]
+    h = min(h_r, h_s)
+    w = min(w_r, w_s)
+
+    ref_crop = reference_img[:h, :w]
+    reg_crop = registered_img[:h, :w]
+
+    # Convert both to uint8 single channel
+    if len(ref_crop.shape) == 3:
+        ref_crop = cv2.cvtColor(ref_crop, cv2.COLOR_BGR2GRAY)
+    if len(reg_crop.shape) == 3:
+        reg_crop = cv2.cvtColor(reg_crop, cv2.COLOR_BGR2GRAY)
+
+    # Mask: where registered image has data (pixel > 5)
+    mask = reg_crop > 5
+
+    # Start with reference as base
+    composite = ref_crop.copy().astype(np.uint8)
+
+    # Paste registered image where it has data
+    composite[mask] = reg_crop[mask]
+
+    # Convert to BGR for display
+    composite_color = cv2.cvtColor(composite, cv2.COLOR_GRAY2BGR)
+
+    # Draw a thin blue border around the OHRC strip for visibility
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+    cv2.drawContours(composite_color, contours, -1, (255, 100, 0), 2)
+
+    return composite_color

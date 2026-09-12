@@ -189,3 +189,86 @@ def enforce_uniform_distribution(src_pts, dst_pts, good_matches, img_shape, grid
     filtered_matches = [good_matches[i] for i in kept_indices]
 
     return filtered_src, filtered_dst, filtered_matches
+
+
+def detect_and_match_template(img1: np.ndarray, img2: np.ndarray,
+                               num_patches: int = 16) -> tuple:
+    """
+    Template matching fallback for when feature detectors find no keypoints.
+
+    Works by dividing img1 into a grid of patches and finding where each
+    patch best matches in img2 using normalized cross-correlation.
+
+    Does not require distinctive keypoints — works on flat, shadowed, 
+    low-texture terrain where SIFT/AKAZE completely fail.
+
+    Parameters:
+        img1       : source image
+        img2       : reference image  
+        num_patches: number of patches per row/col (default 4×4 = 16 patches)
+
+    Returns:
+        src_pts, dst_pts, kp1, kp2, good_matches (same format as SIFT)
+    """
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
+
+    patch_h = h1 // num_patches
+    patch_w = w1 // num_patches
+
+    src_pts_list = []
+    dst_pts_list = []
+    scores = []
+
+    for row in range(num_patches):
+        for col in range(num_patches):
+            # Extract patch from img1
+            y1 = row * patch_h
+            x1 = col * patch_w
+            patch = img1[y1:y1+patch_h, x1:x1+patch_w].astype(np.float32)
+
+            if patch.std() < 3:  # skip flat patches with no texture
+                continue
+
+            # Search in img2 using normalized cross-correlation
+            result = cv2.matchTemplate(
+                img2.astype(np.float32), patch, cv2.TM_CCOEFF_NORMED
+            )
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            if max_val > 0.4:  # only keep good matches
+                # Source point = center of patch in img1
+                src_x = x1 + patch_w // 2
+                src_y = y1 + patch_h // 2
+                # Destination point = center of match in img2
+                dst_x = max_loc[0] + patch_w // 2
+                dst_y = max_loc[1] + patch_h // 2
+
+                src_pts_list.append([src_x, src_y])
+                dst_pts_list.append([dst_x, dst_y])
+                scores.append(max_val)
+
+    if len(src_pts_list) < 4:
+        raise ValueError(
+            f"Template matching found only {len(src_pts_list)} matches "
+            f"(threshold 0.4). Images may have no overlapping texture."
+        )
+
+    print(f"         [TEMPLATE] {len(src_pts_list)} patch matches found "
+          f"(avg score: {np.mean(scores):.3f})")
+
+    src_pts = np.float32(src_pts_list).reshape(-1, 1, 2)
+    dst_pts = np.float32(dst_pts_list).reshape(-1, 1, 2)
+
+    # Create fake keypoints and matches for compatibility
+    kp1 = [cv2.KeyPoint(float(p[0]), float(p[1]), 10.0) for p in src_pts_list]
+    kp2 = [cv2.KeyPoint(float(p[0]), float(p[1]), 10.0) for p in dst_pts_list]
+    matches = []
+    for i, score in enumerate(scores):
+        m = cv2.DMatch()
+        m.queryIdx = i
+        m.trainIdx = i
+        m.distance = float(1.0 - score)
+        matches.append(m)
+
+    return src_pts, dst_pts, kp1, kp2, matches

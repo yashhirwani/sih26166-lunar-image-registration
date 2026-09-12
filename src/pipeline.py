@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 
 from .config_loader import get_config
 from .preprocess import preprocess_pair, preprocess_with_sun_angle, preprocess_pair_advanced
-from .match import detect_and_match_sift, detect_and_match_akaze, enforce_uniform_distribution
+from .match import detect_and_match_sift, detect_and_match_akaze, enforce_uniform_distribution, detect_and_match_template
 from .loftr_match import detect_and_match_loftr, loftr_to_opencv_matches, create_fake_keypoints, load_loftr
 from .structural_match import detect_and_match_structural
 from .transform import (estimate_homography_ransac, warp_image, subpixel_refinement,
@@ -303,6 +303,13 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
                     r = _run_method_safe('LoFTR', _try_loftr, img1_clean, img2_clean)
                     if r: candidates.append(('LoFTR', r))
 
+                # Template matching — last resort for low-texture/flat terrain
+                # Works without keypoints — slides patches over the image
+                if best_score_so_far < 2.0:
+                    r = _run_method_safe('TEMPLATE', detect_and_match_template,
+                                         img1_clean, img2_clean)
+                    if r: candidates.append(('TEMPLATE', r))
+
                 if not candidates:
                     raise ValueError("All algorithms failed to find matches")
 
@@ -464,6 +471,14 @@ def run_pipeline(img1, img2, method='auto', max_size=None,
             "Reference Image", "Registered Source")
         result['difference_image'] = create_difference_image(
             img2_clean, result['registered_image_refined'])
+        # Composite: registered source placed on top of reference background
+        # Only create if registration was reliable
+        from .visualize import create_composite
+        if metrics.get('confidence') in ('high', 'medium') and not metrics.get('degenerate_fit', True):
+            result['composite'] = create_composite(
+                img2_clean, result['registered_image_refined'])
+        else:
+            result['composite'] = None
     except Exception as e:
         print(f"         Visualization warning: {e}")
 
@@ -730,8 +745,7 @@ def register_iirs(
     print(f"[I-2] Reference crop: {original_ref_shape} → {cropped_ref.shape}")
 
     # ── Step I-3: GSD normalisation ────────────────────────────────
-    iirs_res = iirs_meta.get('resolution_m_per_px',
-                iirs_meta.get('pixel_resolution_m', 80.0))
+    iirs_res = iirs_meta.get('resolution_m_per_px') or iirs_meta.get('pixel_resolution_m') or 80.0
     ref_res  = reference_meta.get('pixel_resolution_m',
                 reference_meta.get('resolution_m_per_px', 0.25))
 

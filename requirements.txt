@@ -13,3 +13,4 @@ pytest
 rasterio
 pyproj
 phasepack
+groq

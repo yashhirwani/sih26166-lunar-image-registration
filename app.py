@@ -1007,7 +1007,7 @@ with tab4:
         else:
             view_mode = st.radio(
                 "view",
-                ["Side by Side","Checkerboard","Difference Map"],
+                ["Side by Side","Checkerboard","Difference Map","Composite"],
                 horizontal=True,
                 label_visibility="collapsed",
             )
@@ -1015,11 +1015,13 @@ with tab4:
                 "Side by Side":  "Left: Reference · Right: Registered source",
                 "Checkerboard":  "Alternating 64 px tiles · seamless borders = correct alignment",
                 "Difference Map":"Pixel-wise absolute difference · dark = aligned · bright = residual error",
+                "Composite":     "Registered OHRC placed on LRO NAC background · blue border = OHRC strip boundary",
             }
             key_map = {
                 "Side by Side":  "side_by_side",
                 "Checkerboard":  "checkerboard",
                 "Difference Map":"difference_image",
+                "Composite":     "composite",
             }
             st.markdown(
                 f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72em;'
@@ -1027,7 +1029,7 @@ with tab4:
                 unsafe_allow_html=True,
             )
             st.image(res[key_map[view_mode]], use_container_width=True)
-            dc1,dc2 = st.columns(2)
+            dc1,dc2,dc3 = st.columns(3)
             with dc1:
                 st.download_button("⬇  DOWNLOAD REGISTERED IMAGE",
                     data=numpy_to_bytes(res["registered_image_refined"]),
@@ -1038,6 +1040,12 @@ with tab4:
                     data=numpy_to_bytes(res["checkerboard"]),
                     file_name="lunaralign_checkerboard.png",mime="image/png",
                     use_container_width=True)
+            with dc3:
+                if res.get("composite") is not None:
+                    st.download_button("⬇  DOWNLOAD COMPOSITE",
+                        data=numpy_to_bytes(res["composite"]),
+                        file_name="lunaralign_composite.png",mime="image/png",
+                        use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1173,7 +1181,27 @@ with tab5:
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # ── Full report ────────────────────────────────────────
+            # ── AI Explanation ─────────────────────────────────────
+            st.markdown('<div class="sec-label">AI Result Explanation</div>',
+                        unsafe_allow_html=True)
+            with st.spinner("Generating explanation…"):
+                try:
+                    from src.ai_explain import explain_result
+                    src_meta = st.session_state.get("ohrc_src_meta")
+                    ref_meta = st.session_state.get("ohrc_ref_meta")
+                    explanation = explain_result(res, src_meta, ref_meta)
+                    st.markdown(
+                        f'<div style="background:#ffffff;border:1px solid #d0d4db;'
+                        f'border-left:4px solid #003f7f;padding:16px 18px;'
+                        f'font-size:0.88em;line-height:1.7;color:#1a1a1a;'
+                        f'font-family:\'IBM Plex Sans\',sans-serif;">'
+                        f'{explanation}</div>',
+                        unsafe_allow_html=True,
+                    )
+                except Exception as e:
+                    st.caption(f"AI explanation unavailable: {e}")
+
+            st.markdown("<br>", unsafe_allow_html=True)
             st.markdown(sec("Full Metrics Report"), unsafe_allow_html=True)
             st.code(res.get("metrics_report","No report available"), language="text")
 
