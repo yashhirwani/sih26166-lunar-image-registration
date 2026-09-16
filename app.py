@@ -29,9 +29,11 @@ from src.pipeline import run_pipeline
 from src.visualize import numpy_to_bytes
 
 # ── Page config ────────────────────────────────────────────────────
+_FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "mirai_devs_symbol.png")
+
 st.set_page_config(
     page_title="LunarAlign · PS166 · ISRO",
-    page_icon="⊕",
+    page_icon=_FAVICON_PATH if os.path.exists(_FAVICON_PATH) else "⊕",
     layout="wide",
     initial_sidebar_state="expanded",
 )
